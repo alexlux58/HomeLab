@@ -1,0 +1,6 @@
+# Public repository boundary: production state and credentials never belong here.
+*
+!.gitignore
+!README.md
+!public/
+!public/**
