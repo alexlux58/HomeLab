@@ -1,6 +1,14 @@
 # Public repository boundary: production state and credentials never belong here.
+#
+# Deny everything, then allow only the reviewed public tree. Keep it that way:
+# every new public file goes under public/, never at the repository root.
+#
+# Do NOT add a bare "!README.md". A pattern with no slash matches at any depth,
+# so it un-ignores the ROOT README.md — the internal operator hub that names the
+# cluster layout and the ~/.secrets/home-lab credential inventory path. That one
+# line is what made "git add ." unsafe. public/README.md is already covered by
+# the public/ rules below and needs no exception of its own.
 *
 !.gitignore
-!README.md
 !public/
 !public/**
