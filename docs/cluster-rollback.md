@@ -119,7 +119,9 @@ If the in-place upgrade leaves `.11` unbootable:
    `/etc/modprobe.d` and the GRUB cmdline for VFIO/IOMMU.
 4. Re-add the NFS storage: `make nas-preflight EXTRA="-e allow_configure_nfs_storage=true"`.
 5. Restore its guests from `artifacts/backup-manifest.json` with their original
-   VMIDs 290 and 297.
+   VMID 290. (VMID 297 was destroyed on 2026-09-19 after the operator
+   confirmed it obsolete. Its two archives are retained permanently and must
+   never be deleted, but it is not restored as part of a rollback.)
 6. Re-verify EVE-NG's nested virtualisation and any passthrough devices before
    starting VMID 290.
 

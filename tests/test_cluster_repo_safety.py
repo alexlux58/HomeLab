@@ -691,10 +691,14 @@ def test_netbox_vmid_and_mac_do_not_collide_with_reserved_identities(repo_root):
 
     # 300/310/399 are live or retained; 320-322 are reserved for OpenBao voters.
     assert vm_id not in {300, 310, 399, 320, 321, 322}
+    # A retired guest's MAC stays on this list. Freeing it would let a future VM
+    # reuse an address that still appears in router DHCP reservations, neighbour
+    # caches and monitoring history - VM 297's MAC was still cached against
+    # 192.168.0.73 on 2026-09-19, days after the guest was destroyed.
     reserved_macs = {
         "52:54:00:00:00:00",  # VM 290 net0
         "52:54:00:00:00:00",  # VM 290 net1
-        "52:54:00:00:00:00",  # VM 297
+        "52:54:00:00:00:00",  # VM 297 - RETIRED 2026-09-19, stays reserved
         "52:54:00:00:00:00",  # VM 300
         "52:54:00:00:00:00",  # VM 310
         "52:54:00:00:00:00",  # VM 399 restore test

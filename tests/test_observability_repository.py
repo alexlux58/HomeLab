@@ -5,6 +5,8 @@ import re
 import unittest
 from pathlib import Path
 
+import yaml
+
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -132,10 +134,28 @@ class RepositoryTests(unittest.TestCase):
             self.assertNotIn("192.168.0.30", active)
 
     def test_intentional_stopped_guests_are_excluded_from_guest_down(self) -> None:
-        rules = (ROOT / "config/prometheus/rules/proxmox.yml").read_text(
-            encoding="utf-8"
+        # Assert against the parsed expression rather than the raw file text.
+        # A substring check over the whole file also matches explanatory
+        # comments, which made an earlier version of this test fail on a comment
+        # that correctly documented why qemu/297 had been removed.
+        document = yaml.safe_load(
+            (ROOT / "config/prometheus/rules/proxmox.yml").read_text(encoding="utf-8")
         )
-        self.assertIn('id!~"qemu/297|qemu/399"', rules)
+        expressions = [
+            rule["expr"]
+            for group in document["groups"]
+            for rule in group["rules"]
+            if rule.get("alert") == "ProxmoxGuestDown"
+        ]
+        self.assertEqual(len(expressions), 1)
+        expression = expressions[0]
+        # qemu/399 is the isolated restore-drill shell and is deliberately kept
+        # powered off, so it must stay excluded from ProxmoxGuestDown.
+        self.assertIn('id!~"qemu/399"', expression)
+        # qemu/297 was destroyed on 2026-09-19. Its exclusion matched nothing and
+        # described the guest as protected and merely stopped, which was false.
+        # Asserting its absence stops the stale exclusion being reinstated.
+        self.assertNotIn("qemu/297", expression)
 
     def test_dashboard_update_syncs_file_sd_and_blackbox(self) -> None:
         playbook = (ROOT / "ansible/playbooks/update-dashboards.yml").read_text(

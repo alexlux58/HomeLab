@@ -4,7 +4,7 @@
 
 | host | IP | hostname | PVE | role in this migration |
 |---|---|---|---|---|
-| seed | 192.168.0.11 | `pve1` | 8.2.2 | Preserve VMIDs 290 and 297. Upgrade in place to PVE 9, then create the cluster. Never clean-installed. |
+| seed | 192.168.0.11 | `pve1` | 8.2.2 | Preserve VMID 290. Upgrade in place to PVE 9, then create the cluster. Never clean-installed. (VMID 297 was also preserved through the migration; the operator confirmed it obsolete and destroyed it on 2026-09-19. Its archives are retained.) |
 | member | 192.168.0.12 | `pve2` | 8.2.2 | Catalog old workloads, clean-install, and join empty. Rebuild desired software later. |
 | member | 192.168.0.13 | `pve3` | 9.2.2 | Clean-installed and empty; join after the seed upgrade. |
 | backup | 192.168.0.20 | Synology DSM | — | NFS backup target on **Volume 1 / Storage Pool 2 only**. |
@@ -12,7 +12,7 @@
 Guests that must survive:
 
 ```text
-pve1   290 EVENG    297 ubuntu-vm
+pve1   290 EVENG
 ```
 
 Guests deliberately replaced by later clean rebuilds: `pve2` 100
