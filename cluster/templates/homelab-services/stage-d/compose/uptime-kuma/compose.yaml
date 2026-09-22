@@ -1,0 +1,39 @@
+---
+name: homelab-uptime-kuma
+
+services:
+  uptime-kuma:
+    image: louislam/uptime-kuma:2.3.2@sha256:dbede95c52962acf5dedc67b46d98fe9ad366c708aebc5e0ee70ca5245181482
+    container_name: uptime-kuma
+    restart: unless-stopped
+    user: "1000:1000"
+    expose:
+      - "3001"
+    ports:
+      - "127.0.0.1:8183:3001"
+    volumes:
+      - /srv/homelab/uptime-kuma/data:/app/data
+    networks:
+      homelab_proxy:
+        aliases:
+          - uptime-kuma
+    read_only: true
+    tmpfs:
+      - /tmp:size=32m,mode=1777
+    cap_drop:
+      - ALL
+    cap_add:
+      - NET_RAW
+    security_opt:
+      - no-new-privileges:true
+    mem_limit: 512m
+    mem_reservation: 128m
+    cpus: 1.0
+    pids_limit: 512
+    labels:
+      com.examplelab.homelab.role: monitoring
+      com.examplelab.homelab.state: /srv/homelab/uptime-kuma
+
+networks:
+  homelab_proxy:
+    external: true

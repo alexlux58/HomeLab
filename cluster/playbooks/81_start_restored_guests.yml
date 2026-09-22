@@ -1,0 +1,81 @@
+---
+# Stage 10c — start the restored guests, one at a time, with separate approval.
+#
+#   make start-restored-guests EXTRA="-e allow_start_restored_guests=true \
+#     -e start_restored_confirmation='START RESTORED GUESTS ON pve2'"
+- name: Start the restored guests
+  hosts: pve2
+  gather_facts: true
+  serial: 1
+  any_errors_fatal: true
+  tags: [stage10, start]
+
+  pre_tasks:
+    - name: Require explicit approval
+      ansible.builtin.assert:
+        that:
+          - allow_start_restored_guests | bool
+          - start_restored_confirmation == start_restored_confirmation_required
+        fail_msg: |
+          Refusing to start restored guests. Re-run with BOTH of:
+            -e allow_start_restored_guests=true
+            -e start_restored_confirmation='{{ start_restored_confirmation_required }}'
+
+    - name: Load the approved restore plan
+      ansible.builtin.set_fact:
+        start_plan: "{{ lookup('file', artifacts_dir ~ '/restore-plan.json') | from_json }}"
+
+  tasks:
+    - name: Re-assert isolation before anything is powered on
+      ansible.builtin.command:
+        argv: [qm, config, "{{ item.target_vmid }}"]
+      changed_when: false
+      register: start_isolation_check
+      loop: "{{ start_plan.entries | selectattr('isolation', 'ne', 'none') | list }}"
+      loop_control:
+        label: "{{ item.target_vmid }} {{ item.name }}"
+
+    - name: Assert every isolated guest still has all NICs disconnected
+      ansible.builtin.assert:
+        that:
+          - (item.stdout_lines | select('match', '^net[0-9]+:') | select('search', 'link_down=1') | list | length)
+            == (item.stdout_lines | select('match', '^net[0-9]+:') | list | length)
+        fail_msg: |
+          {{ item.item.name }} (VMID {{ item.item.target_vmid }}) is NOT isolated.
+          This guest is intentionally vulnerable and must never reach a routed network.
+          Refusing to start anything.
+      loop: "{{ start_isolation_check.results }}"
+      loop_control:
+        label: "{{ item.item.target_vmid }}"
+
+    - name: Start each guest that was running before the migration
+      ansible.builtin.command:
+        argv: [qm, start, "{{ item.target_vmid }}"]
+      changed_when: true
+      loop: "{{ start_plan.entries }}"
+      loop_control:
+        label: "{{ item.target_vmid }} {{ item.name }}"
+        pause: 30
+      when:
+        - item.original_running_state == 'running'
+        - start_only_vmid is not defined or (item.target_vmid | int) == (start_only_vmid | int)
+
+    - name: Wait a moment for the guests to initialise
+      ansible.builtin.wait_for:
+        timeout: 60
+      delegate_to: localhost
+      become: false
+
+    - name: Read the resulting state
+      ansible.builtin.command: qm list
+      changed_when: false
+      register: start_list
+
+    - name: Report
+      ansible.builtin.debug:
+        msg:
+          - "{{ start_list.stdout_lines }}"
+          - ""
+          - "Guests that were stopped before the migration were left stopped."
+          - "Start a single guest with: -e start_only_vmid=<vmid>"
+          - "Next: `make validate`."

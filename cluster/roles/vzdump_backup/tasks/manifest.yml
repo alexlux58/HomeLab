@@ -1,0 +1,38 @@
+---
+- name: Combine this host's manifest fragments
+  ansible.builtin.shell: |
+    set -o pipefail
+    set -eu
+    cd {{ vzdump_backup_manifest_dir | quote }}
+    printf '['
+    first=1
+    for f in {{ vzdump_backup_generation }}-*.json; do
+      [ -e "$f" ] || continue
+      if [ $first -eq 0 ]; then printf ','; fi
+      cat "$f"
+      first=0
+    done
+    printf ']\n'
+  args:
+    executable: /bin/bash
+  changed_when: false
+  register: vzdump_backup_manifest_combined
+
+- name: Save this host's manifest on the controller
+  ansible.builtin.copy:
+    content: "{{ vzdump_backup_manifest_combined.stdout | from_json | to_nice_json }}\n"
+    dest: "{{ artifacts_dir }}/backup-manifest-{{ expected_hostname }}-{{ vzdump_backup_generation }}.json"
+    mode: "0644"
+  delegate_to: localhost
+  become: false
+
+- name: Assert one manifest entry exists per protected guest
+  ansible.builtin.assert:
+    that:
+      - (vzdump_backup_manifest_combined.stdout | from_json | length) == (vzdump_backup_targets | length)
+    fail_msg: >-
+      Expected {{ vzdump_backup_targets | length }} archives for {{ inventory_hostname }} but the
+      manifest has {{ vzdump_backup_manifest_combined.stdout | from_json | length }}.
+    success_msg: >-
+      {{ vzdump_backup_targets | length }} archives written for {{ inventory_hostname }}
+      (generation {{ vzdump_backup_generation }}).

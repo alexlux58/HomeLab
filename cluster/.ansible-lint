@@ -1,0 +1,27 @@
+---
+profile: production
+
+exclude_paths:
+  - .venv/
+  - collections/
+  - artifacts/
+  - host-configs/
+  - .github/
+  - tests/fixtures/
+
+# `command`/`shell` are unavoidable here: pvecm, vzdump, qmrestore, pve8to9 and
+# vma have no Ansible modules, and wrapping them in a half-baked custom module
+# would hide their exit codes from the operator.
+skip_list:
+  - command-instead-of-shell   # pipefail pipelines are required for vma verify
+  - no-changed-when            # explicitly set on every read-only task instead
+  - fqcn[action-core]          # false positives on block/rescue in some versions
+
+warn_list:
+  - experimental
+  - package-latest
+
+kinds:
+  - playbook: "playbooks/*.yml"
+  - tasks: "roles/**/tasks/*.yml"
+  - vars: "inventory/group_vars/*.yml"

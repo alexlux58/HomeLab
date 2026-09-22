@@ -1,0 +1,84 @@
+---
+# Stage 7 — create the cluster on the seed node only.
+#
+#   make create-cluster EXTRA="-e allow_create_cluster=true \
+#     -e create_cluster_confirmation='CREATE CLUSTER homelab ON pve1 192.168.0.11'"
+- name: Create the Proxmox cluster on the seed node
+  hosts: seed
+  gather_facts: true
+  serial: 1
+  any_errors_fatal: true
+  tags: [stage7, cluster]
+
+  pre_tasks:
+    - name: Require verified backups before touching the seed
+      ansible.builtin.stat:
+        path: "{{ artifacts_dir }}/backup-verification.json"
+      delegate_to: localhost
+      become: false
+      register: create_cluster_verification
+
+    - name: Assert the backup verification passed
+      ansible.builtin.assert:
+        that:
+          - create_cluster_verification.stat.exists
+          - (lookup('file', artifacts_dir ~ '/backup-verification.json') | from_json).verdict == 'pass'
+        fail_msg: >-
+          artifacts/backup-verification.json is missing or did not pass. Run
+          `make verify-backups` and resolve every failure first.
+
+    - name: Take a pre-cluster discovery snapshot
+      ansible.builtin.include_role:
+        name: discovery
+
+    - name: Save the pre-cluster snapshot
+      ansible.builtin.copy:
+        content: |
+          {{ {'schema_version': 1, 'generated_at': ansible_date_time.iso8601,
+              'hosts': {inventory_hostname: discovery_host_document}} | to_nice_json }}
+        dest: "{{ artifacts_dir }}/pre-clustercreate-{{ expected_hostname }}.json"
+        mode: "0644"
+      delegate_to: localhost
+      become: false
+
+  roles:
+    - role: pve_cluster
+
+  post_tasks:
+    - name: Take a post-cluster discovery snapshot
+      ansible.builtin.include_role:
+        name: discovery
+
+    - name: Save the post-cluster snapshot
+      ansible.builtin.copy:
+        content: |
+          {{ {'schema_version': 1, 'generated_at': ansible_date_time.iso8601,
+              'hosts': {inventory_hostname: discovery_host_document}} | to_nice_json }}
+        dest: "{{ artifacts_dir }}/post-clustercreate-{{ expected_hostname }}.json"
+        mode: "0644"
+      delegate_to: localhost
+      become: false
+
+    - name: Diff the pre- and post-cluster state
+      ansible.builtin.command:
+        argv:
+          - "{{ project_root }}/.venv/bin/python"
+          - "{{ scripts_dir }}/compare_pre_post_state.py"
+          - --pre
+          - "{{ artifacts_dir }}/pre-clustercreate-{{ expected_hostname }}.json"
+          - --post
+          - "{{ artifacts_dir }}/post-clustercreate-{{ expected_hostname }}.json"
+          - --out-json
+          - "{{ artifacts_dir }}/cluster-create-diff.json"
+          - --out-markdown
+          - "{{ artifacts_dir }}/cluster-create-diff.md"
+      changed_when: false
+      delegate_to: localhost
+      become: false
+
+    - name: Report
+      ansible.builtin.debug:
+        msg:
+          - "Cluster '{{ cluster_name }}' exists with one node and quorum."
+          - "State diff: artifacts/cluster-create-diff.md — confirm nothing disappeared."
+          - "HA is NOT enabled. Clustering is not high availability."

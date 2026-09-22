@@ -1,0 +1,46 @@
+---
+name: homelab-linkding
+
+services:
+  linkding:
+    image: sissbruecker/linkding:1.45.0@sha256:5bc84e0766268b0d119c0a4e10131a2fd12d91da66493f8d395df5c5e7b8d6d5
+    container_name: linkding
+    restart: unless-stopped
+    environment:
+      LD_CSRF_TRUSTED_ORIGINS: https://links.lab.example.com
+      LD_LOG_X_FORWARDED_FOR: "True"
+      LD_SERVER_HOST: 0.0.0.0
+      PYTHONDONTWRITEBYTECODE: "1"
+    expose:
+      - "9090"
+    volumes:
+      - /srv/homelab/linkding/data:/etc/linkding/data
+    networks:
+      homelab_proxy:
+        aliases:
+          - linkding
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m,mode=1777
+      - /run:size=8m,mode=0755
+      - /var/log:size=16m,mode=0755
+    cap_drop:
+      - ALL
+    cap_add:
+      - CHOWN
+      - DAC_OVERRIDE
+      - SETGID
+      - SETUID
+    security_opt:
+      - no-new-privileges:true
+    mem_limit: 384m
+    mem_reservation: 128m
+    cpus: 1.0
+    pids_limit: 256
+    labels:
+      com.examplelab.homelab.role: bookmarks
+      com.examplelab.homelab.state: /srv/homelab/linkding
+
+networks:
+  homelab_proxy:
+    external: true

@@ -1,0 +1,48 @@
+---
+# Stages 3 and 4. Backs up every protected guest on ONE host at a time to the
+# Synology. Refuses to start if anything about the situation is unsafe.
+#
+# This role never prunes, never deletes an archive, and never touches .13.
+
+- name: Refuse to back up a host that is not marked for preservation
+  ansible.builtin.assert:
+    that:
+      - preserve_guests | bool
+    fail_msg: >-
+      {{ inventory_hostname }} has preserve_guests=false. Its guests are
+      disposable and must not be backed up. Aborting.
+
+- name: Load the guests that must be protected on this host
+  ansible.builtin.set_fact:
+    vzdump_backup_targets: "{{ protected_guests[inventory_hostname] | default([]) }}"
+
+- name: Assert this host actually has protected guests declared
+  ansible.builtin.assert:
+    that:
+      - vzdump_backup_targets | length > 0
+    fail_msg: "No protected guests are declared for {{ inventory_hostname }}."
+
+- name: Ensure the backup manifest directory exists
+  ansible.builtin.file:
+    path: "{{ vzdump_backup_manifest_dir }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0700"
+
+- name: Include the pre-backup safety gates
+  ansible.builtin.include_tasks: preflight.yml
+
+- name: Include the guest shutdown sequence (final generation only)
+  ansible.builtin.include_tasks: shutdown_guests.yml
+  when: vzdump_backup_stop_guests_first | bool
+
+- name: Run vzdump for each protected guest, one at a time
+  ansible.builtin.include_tasks: backup_one.yml
+  loop: "{{ vzdump_backup_targets }}"
+  loop_control:
+    loop_var: guest
+    label: "{{ guest.vmid }} {{ guest.name }}"
+
+- name: Assemble this host's manifest
+  ansible.builtin.include_tasks: manifest.yml

@@ -1,0 +1,7 @@
+---
+validation_probe_guest_agents: true
+validation_probe_application_ports: true
+validation_application_ports: []
+#   - {vmid: 101, host: 192.168.0.81, port: 6443, name: "k3s API"}
+validation_report_path: "{{ artifacts_dir }}/migration-report.md"
+validation_max_corosync_latency_ms: "{{ corosync_max_latency_ms }}"

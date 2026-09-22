@@ -1,0 +1,102 @@
+---
+- name: Create observability configuration directory
+  ansible.builtin.file:
+    path: "{{ observability_stack_root }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Create observability secrets directory
+  ansible.builtin.file:
+    path: "{{ observability_stack_secrets_root }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0700"
+
+- name: Check required secret files
+  ansible.builtin.stat:
+    path: "{{ observability_stack_secrets_root }}/{{ item }}"
+  loop: "{{ observability_stack_required_secrets }}"
+  register: observability_stack_secret_stats
+  no_log: true
+
+- name: Assert required secret files exist with restrictive permissions
+  ansible.builtin.assert:
+    that:
+      - item.stat.exists
+      - item.stat.isreg
+      - item.stat.mode in ['0400', '0600']
+      - item.stat.size | int >= observability_stack_minimum_secret_bytes[item.item] | int
+    fail_msg: >-
+      A required /etc/observability/secret-store file is absent, not mode 0400/0600,
+      or shorter than its metadata-only safety floor.
+  loop: "{{ observability_stack_secret_stats.results }}"
+  no_log: true
+
+- name: Create observability data directories
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    state: directory
+    owner: "{{ item.owner }}"
+    group: "{{ item.group }}"
+    mode: "0750"
+  loop:
+    - {path: "{{ observability_stack_data_root }}", owner: root, group: root}
+    - {path: "{{ observability_stack_data_root }}/prometheus", owner: "65534", group: "65534"}
+    - {path: "{{ observability_stack_data_root }}/alertmanager", owner: root, group: root}
+    - {path: "{{ observability_stack_data_root }}/loki", owner: "10001", group: "10001"}
+    - {path: "{{ observability_stack_data_root }}/alloy", owner: "473", group: "473"}
+    - {path: "{{ observability_stack_data_root }}/grafana", owner: "472", group: "472"}
+    - {path: "{{ observability_stack_data_root }}/backups", owner: root, group: root}
+  loop_control:
+    label: "{{ item.path }}"
+
+- name: Install Compose definition
+  ansible.builtin.copy:
+    src: "{{ playbook_dir }}/../../docker/"
+    dest: "{{ observability_stack_root }}/docker/"
+    owner: root
+    group: root
+    mode: preserve
+  notify: Restart observability stack
+
+- name: Install version-controlled observability configuration
+  ansible.builtin.copy:
+    src: "{{ playbook_dir }}/../../config/"
+    dest: "{{ observability_stack_root }}/config/"
+    owner: root
+    group: root
+    mode: preserve
+  notify: Restart observability stack
+
+- name: Install runtime environment file
+  ansible.builtin.copy:
+    content: |
+      TZ=America/Los_Angeles
+      OBSERVABILITY_IP={{ firewall_observability_ip }}
+    dest: "{{ observability_stack_root }}/docker/.env"
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Restart observability stack
+
+- name: Validate Compose model
+  ansible.builtin.command:
+    argv:
+      - docker
+      - compose
+      - --project-directory
+      - "{{ observability_stack_root }}/docker"
+      - config
+      - --quiet
+  changed_when: false
+
+- name: Deploy central observability stack
+  community.docker.docker_compose_v2:
+    project_src: "{{ observability_stack_root }}/docker"
+    pull: always
+    state: present
+    wait: true
+    wait_timeout: 300

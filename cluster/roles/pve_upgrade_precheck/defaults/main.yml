@@ -1,0 +1,6 @@
+---
+pve_upgrade_precheck_run_pve8to9: true
+pve_upgrade_precheck_apt_update: true
+pve_upgrade_precheck_min_root_free_gib: 10        # official guide: 5 GB minimum, 10+ recommended
+pve_upgrade_precheck_require_verified_backups: true
+pve_upgrade_precheck_report_path: "{{ artifacts_dir }}/upgrade-precheck-{{ expected_hostname }}.md"

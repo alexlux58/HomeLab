@@ -1,0 +1,39 @@
+# Gitleaks configuration.
+#
+# The migration must never commit credentials. The Proxmox root passwords, DSM
+# credentials and the SSH private key live only on the operator workstation.
+title = "proxmox-cluster-migration"
+
+[extend]
+useDefault = true
+
+[[rules]]
+id = "pve-root-password-assignment"
+description = "Possible Proxmox/DSM password assigned in code or inventory"
+regex = '''(?i)\b(ansible_(ssh_)?pass(word)?|root_password|dsm_password|pve_password|api_password)\b\s*[:=]\s*["']?[^\s"'{#]{3,}'''
+tags = ["password", "ansible"]
+
+[[rules]]
+id = "openssh-private-key-body"
+description = "OpenSSH private key material"
+regex = '''-----BEGIN (OPENSSH|RSA|EC|DSA|PGP) PRIVATE KEY-----'''
+tags = ["key", "ssh"]
+
+[[rules]]
+id = "pve-api-token"
+description = "Proxmox VE API token secret"
+regex = '''(?i)\bPVEAPIToken\s*[:=]\s*\S+'''
+tags = ["token", "proxmox"]
+
+[allowlist]
+description = "Documentation placeholders and public key material"
+paths = [
+  '''\.gitleaks\.toml$''',
+  '''docs/.*\.md$''',
+  '''README\.md$''',
+]
+regexes = [
+  '''<REDACTED>''',
+  '''CHANGE_ME''',
+  '''ssh-ed25519 AAAA''',
+]

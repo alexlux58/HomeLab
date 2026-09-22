@@ -1,0 +1,9 @@
+---
+# Intentionally empty until Observability Stage I-G deploys Node Exporter on
+# VM 300. Scraping 192.168.0.30:9100 before that stage pages as ScrapeTargetDown.
+# Re-enable:
+# - targets: ["192.168.0.30:9100"]
+#   labels:
+#     host: homelab-services
+#     role: docker-host
+[]

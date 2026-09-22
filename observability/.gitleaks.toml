@@ -1,0 +1,17 @@
+title = "homelab-observability"
+
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Documentation placeholders only"
+regexTarget = "line"
+regexes = [
+  '''REPLACE_WITH_[A-Z0-9_]+''',
+  '''example.invalid'''
+]
+paths = [
+  '''(^|/)\.ansible/''',
+  '''(^|/)\.venv/''',
+  '''(^|/)artifacts/'''
+]

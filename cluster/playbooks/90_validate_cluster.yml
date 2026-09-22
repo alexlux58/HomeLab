@@ -1,0 +1,88 @@
+---
+# Stage 11 — full read-only validation of the finished cluster.
+#
+#   make validate
+- name: Validate the three-node cluster
+  hosts: proxmox
+  gather_facts: true
+  serial: 1
+  any_errors_fatal: true
+  tags: [stage11, validate, readonly]
+
+  roles:
+    - role: validation
+
+- name: Cross-node uniqueness checks and the final report
+  hosts: localhost
+  gather_facts: true
+  connection: local
+  become: false
+  any_errors_fatal: true
+  tags: [stage11, validate, readonly]
+
+  tasks:
+    - name: Take a final discovery snapshot for the record
+      ansible.builtin.debug:
+        msg: "Run `make discover` after this play to refresh artifacts/discovery.json with the final state."
+
+    - name: Collect every VMID across the cluster
+      ansible.builtin.set_fact:
+        all_vmids: >-
+          {{ groups['proxmox']
+             | map('extract', hostvars, 'validation_guests')
+             | selectattr('stdout', 'defined')
+             | map(attribute='stdout') | map('from_json') | flatten
+             | map(attribute='vmid') | map('int') | list }}
+
+    - name: Assert every VMID is unique cluster-wide
+      ansible.builtin.assert:
+        that:
+          - (all_vmids | length) == (all_vmids | unique | length)
+        fail_msg: >-
+          Duplicate VMIDs exist in the cluster:
+          {{ all_vmids | community.general.counter | dict2items | selectattr('value', '>', 1) | map(attribute='key') | list }}
+        success_msg: "All {{ all_vmids | length }} VMIDs are unique cluster-wide."
+
+    - name: Collect every MAC address across the cluster
+      ansible.builtin.set_fact:
+        all_macs: >-
+          {{ groups['proxmox']
+             | map('extract', hostvars, 'validation_macs')
+             | selectattr('stdout_lines', 'defined')
+             | map(attribute='stdout_lines') | flatten | list }}
+
+    - name: Assert every MAC address is unique cluster-wide
+      ansible.builtin.assert:
+        that:
+          - (all_macs | length) == (all_macs | unique | length)
+        fail_msg: >-
+          Duplicate MAC addresses in the cluster:
+          {{ all_macs | community.general.counter | dict2items | selectattr('value', '>', 1) | map(attribute='key') | list }}
+        success_msg: "All {{ all_macs | length }} MAC addresses are unique cluster-wide."
+
+    - name: Assert every guest that must be preserved is registered somewhere
+      ansible.builtin.assert:
+        that:
+          - (item.vmid | int) in all_vmids
+            or (item.vmid | int) in (vmid_preferred_remap.get('pve2', {}).values() | list)
+        fail_msg: "Protected guest {{ item.vmid }} ({{ item.name }}) is not registered anywhere in the cluster."
+      loop: "{{ protected_guests.pve1 | list }}"
+      loop_control:
+        label: "{{ item.vmid }} {{ item.name }}"
+
+    - name: Render the migration report
+      ansible.builtin.template:
+        src: "{{ project_root }}/templates/migration-report.md.j2"
+        dest: "{{ validation_report_path | default(artifacts_dir ~ '/migration-report.md') }}"
+        mode: "0644"
+      vars:
+        report_hosts: "{{ groups['proxmox'] }}"
+
+    - name: Final summary
+      ansible.builtin.debug:
+        msg:
+          - "Migration report: artifacts/migration-report.md"
+          - ""
+          - "Read the 'what this cluster does and does not give you' section."
+          - "In particular: clustering is not HA, local storage is not shared storage,"
+          - "the Synology is a single point of failure, and rebuild-later workloads are not restored."

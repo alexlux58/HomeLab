@@ -1,0 +1,176 @@
+---
+- name: "Re-verify the archive immediately before restoring VMID {{ plan_entry.original_vmid }}"
+  ansible.builtin.shell: |
+    set -o pipefail
+    set -eu
+    test -f {{ plan_entry.archive | quote }}
+    sha256sum {{ plan_entry.archive | quote }} | awk '{print $1}'
+  args:
+    executable: /bin/bash
+  changed_when: false
+  register: pve_restore_one_sha
+
+- name: "Assert the archive checksum still matches the manifest"
+  ansible.builtin.assert:
+    that:
+      - pve_restore_one_sha.stdout | trim == plan_entry.archive_sha256
+    fail_msg: |
+      Checksum mismatch on {{ plan_entry.archive }}:
+        expected {{ plan_entry.archive_sha256 }}
+        got      {{ pve_restore_one_sha.stdout | trim }}
+      Refusing to restore from an archive that has changed.
+
+- name: "Assert the destination is free for VMID {{ plan_entry.target_vmid }}"
+  ansible.builtin.stat:
+    path: "/etc/pve/{{ 'qemu-server' if plan_entry.type == 'qemu' else 'lxc' }}/{{ plan_entry.target_vmid }}.conf"
+  register: pve_restore_one_existing
+
+- name: "Refuse to overwrite an existing guest"
+  ansible.builtin.assert:
+    that:
+      - not pve_restore_one_existing.stat.exists
+    fail_msg: >-
+      VMID {{ plan_entry.target_vmid }} already exists on {{ expected_hostname }}.
+      Refusing to overwrite it. Choose a different VMID in the plan.
+
+- name: "Assert the destination storage exists and is active"
+  ansible.builtin.command:
+    argv: [pvesm, status, --storage, "{{ plan_entry.restore_storage }}"]
+  changed_when: false
+  register: pve_restore_one_storage
+
+- name: "Verify the destination storage is usable"
+  ansible.builtin.assert:
+    that:
+      - "'active' in pve_restore_one_storage.stdout"
+    fail_msg: "Storage {{ plan_entry.restore_storage }} is not active on {{ expected_hostname }}."
+
+- name: "Check free space on the destination storage"
+  # Read the exact byte count from the API. Parsing `pvesm status` columns is
+  # fragile — and its "Available" column is $6, not $5-$6.
+  ansible.builtin.command:
+    argv:
+      - pvesh
+      - get
+      - "/nodes/{{ expected_hostname }}/storage/{{ plan_entry.restore_storage }}/status"
+      - --output-format
+      - json
+  changed_when: false
+  register: pve_restore_one_free
+
+- name: "Assert there is room for the restored disks"
+  ansible.builtin.assert:
+    that:
+      - ((pve_restore_one_free.stdout | from_json).avail | int)
+        > (plan_entry.restored_bytes_estimate | int)
+    fail_msg: >-
+      {{ plan_entry.restore_storage }} has
+      {{ ((pve_restore_one_free.stdout | from_json).avail | int / 1024**3) | round(1) }} GiB free but
+      {{ (plan_entry.restored_bytes_estimate | int / 1024**3) | round(1) }} GiB is needed.
+
+- name: "Assert every required bridge exists on the destination"
+  ansible.builtin.command:
+    argv: [ip, -br, link, show, "{{ item }}"]
+  changed_when: false
+  register: pve_restore_one_bridges
+  loop: "{{ plan_entry.nics | map(attribute='bridge') | select('string') | unique | list }}"
+  loop_control:
+    label: "{{ item }}"
+  failed_when: pve_restore_one_bridges.rc != 0
+
+- name: "Check for MAC collisions on the destination node"
+  ansible.builtin.shell: |
+    set -o pipefail
+    grep -ihoE '([0-9A-F]{2}:){5}[0-9A-F]{2}' /etc/pve/qemu-server/*.conf /etc/pve/lxc/*.conf 2>/dev/null \
+      | tr 'a-f' 'A-F' | sort -u || true
+  args:
+    executable: /bin/bash
+  changed_when: false
+  register: pve_restore_one_macs
+
+- name: "Assert no planned MAC is already in use"
+  ansible.builtin.assert:
+    that:
+      - item.mac | upper not in pve_restore_one_macs.stdout_lines
+    fail_msg: >-
+      MAC {{ item.mac }} for {{ plan_entry.name }} {{ item.key }} is already in use on
+      {{ expected_hostname }}. Regenerate it before restoring.
+  loop: "{{ plan_entry.nics }}"
+  loop_control:
+    label: "{{ item.key }} {{ item.mac }}"
+  when: item.mac_action == 'preserve_mac'
+
+- name: "Assert the original source host is powered off"
+  ansible.builtin.wait_for:
+    host: "{{ hostvars[plan_entry.source_host].ansible_host }}"
+    port: 22
+    state: stopped
+    timeout: 5
+  delegate_to: localhost
+  become: false
+  when:
+    - pve_restore_require_source_powered_off | bool
+    - plan_entry.source_host in hostvars
+    - hostvars[plan_entry.source_host].ansible_host != ansible_host
+
+- name: "Show the proposed restore for {{ plan_entry.name }}"
+  ansible.builtin.debug:
+    msg:
+      - "PROPOSED RESTORE on {{ expected_hostname }}:"
+      - "  {{ plan_entry.original_vmid }} -> {{ plan_entry.target_vmid }}  {{ plan_entry.name }}"
+      - "  archive:  {{ plan_entry.archive }}"
+      - "  storage:  {{ plan_entry.restore_storage }}"
+      - "  command:  {{ plan_entry.restore_command }}"
+      - "  isolation:{{ plan_entry.isolation }}"
+      - "  start after restore: NO"
+
+- name: "Restore (stopped, no auto-start) guest {{ plan_entry.name }}"
+  ansible.builtin.command:
+    argv: >-
+      {{ (['qmrestore', plan_entry.archive, plan_entry.target_vmid | string,
+            '--storage', plan_entry.restore_storage]
+          + (['--unique'] if (plan_entry.nics | selectattr('mac_action', 'equalto', 'regenerate_mac') | list | length > 0) else []))
+         if plan_entry.type == 'qemu'
+         else ['pct', 'restore', plan_entry.target_vmid | string, plan_entry.archive,
+               '--storage', plan_entry.restore_storage] }}
+  changed_when: true
+  async: "{{ pve_restore_timeout_seconds }}"
+  poll: 30
+  register: pve_restore_one_result
+  tags: [never, destructive, restore]
+
+- name: "Confirm the restored configuration exists"
+  ansible.builtin.stat:
+    path: "/etc/pve/{{ 'qemu-server' if plan_entry.type == 'qemu' else 'lxc' }}/{{ plan_entry.target_vmid }}.conf"
+  register: pve_restore_one_config
+
+- name: "Assert the guest is registered"
+  ansible.builtin.assert:
+    that:
+      - pve_restore_one_config.stat.exists
+    fail_msg: "qmrestore reported success but {{ plan_entry.target_vmid }}.conf does not exist."
+
+- name: "Enforce network isolation for {{ plan_entry.name }}"
+  ansible.builtin.include_tasks: isolate_guest.yml
+  when: plan_entry.isolation != 'none'
+
+- name: "Assert the restored guest is not running"
+  ansible.builtin.command:
+    argv: ["{{ 'qm' if plan_entry.type == 'qemu' else 'pct' }}", status, "{{ plan_entry.target_vmid }}"]
+  changed_when: false
+  register: pve_restore_one_status
+
+- name: "Verify the guest is stopped"
+  ansible.builtin.assert:
+    that:
+      - "'stopped' in pve_restore_one_status.stdout"
+    fail_msg: >-
+      {{ plan_entry.target_vmid }} is not stopped after restore
+      ({{ pve_restore_one_status.stdout }}). Guests must not auto-start.
+
+- name: "Report the restored guest"
+  ansible.builtin.debug:
+    msg:
+      - "restored: {{ plan_entry.original_vmid }} -> {{ plan_entry.target_vmid }} ({{ plan_entry.name }})"
+      - "state:    {{ pve_restore_one_status.stdout | trim }}"
+      - "notes:    {{ plan_entry.notes }}"

@@ -1,0 +1,100 @@
+---
+groups:
+  - name: synology
+    rules:
+      - alert: SynologySystemUnhealthy
+        expr: >-
+          max({job="synology-snmp",__name__=~"systemStatus|powerStatus|systemFanStatus|cpuFanStatus"}) != 1
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Synology system health is not normal"
+          description: "DSM reports a non-normal system, power, or fan status value."
+
+      - alert: SynologyRaidNotNormal
+        expr: raidStatus{job="synology-snmp"} != 1
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Synology RAID state is not normal for {{ $labels.raidName }}"
+          description: "Review Storage Manager before changing disks or storage configuration."
+
+      - alert: SynologyDiskUnhealthy
+        expr: >-
+          diskHealthStatus{job="synology-snmp"} != 1
+          or on (instance, diskID) diskStatus{job="synology-snmp"} != 1
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Synology disk health is not normal"
+          description: "Disk {{ $labels.diskID }} reports a non-normal health or operating state."
+
+      # Reallocated sectors never decrease, so a `> 0` threshold can never clear
+      # and degrades into permanent noise. Baseline measured 2026-08-25:
+      # Disk 2 = 0, Disk 3 = 24, Disk 4 = 56, flat across every sample since
+      # collection began. Growth is the signal; the standing count is not.
+      - alert: SynologyDiskBadSectorsRising
+        expr: delta(diskBadSector{job="synology-snmp"}[24h]) > 0
+        for: 30m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Synology disk bad-sector count is rising"
+          description: >-
+            Disk {{ $labels.diskID }} gained {{ $value }} bad sectors in 24h.
+            Check SMART attributes 197/198 before deciding to replace.
+
+      # Absolute ceiling for a disk that is degrading faster than the 24h window
+      # can show. This is a judgement threshold set well above the 2026-08-25
+      # baseline, not a vendor limit; re-audit it if a disk is replaced.
+      - alert: SynologyDiskBadSectorsHigh
+        expr: diskBadSector{job="synology-snmp"} > 200
+        for: 15m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Synology disk has a high bad-sector count"
+          description: "Disk {{ $labels.diskID }} reports {{ $value }} bad sectors."
+
+      - alert: SynologyDiskTemperatureHigh
+        expr: diskTemperature{job="synology-snmp"} > 55
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Synology disk temperature is high"
+          description: "Disk {{ $labels.diskID }} has remained above 55°C for 15 minutes."
+
+      - alert: SynologyVolumeFilling
+        expr: >-
+          1 - raidFreeSize{job="synology-snmp",raidName=~"Volume .*"}
+          / raidTotalSize{job="synology-snmp",raidName=~"Volume .*"} > 0.85
+        for: 30m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Synology {{ $labels.raidName }} is above 85%"
+          description: "Review growth and retention. Automation must not prune backup archives."
+
+      - alert: SynologyVolumeCritical
+        expr: >-
+          1 - raidFreeSize{job="synology-snmp",raidName=~"Volume .*"}
+          / raidTotalSize{job="synology-snmp",raidName=~"Volume .*"} > 0.93
+        for: 15m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Synology {{ $labels.raidName }} is critically full"
+          description: "Less than 7% free space remains on this DSM volume."
+
+      - alert: SynologySnmpScrapeSlow
+        expr: snmp_scrape_duration_seconds{job="synology-snmp"} > 15
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Synology SNMP scrape is slow"
+          description: "The SNMP walk exceeds 15 seconds and is approaching the 30-second timeout."

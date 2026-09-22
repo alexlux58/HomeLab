@@ -1,0 +1,12 @@
+---
+# `generation` labels the backup round: 'initial' (live snapshot) or
+# 'final' (guest cleanly stopped). It ends up in the manifest and is what the
+# gates check when they ask "is the stopped backup the newest one?".
+vzdump_backup_generation: initial
+vzdump_backup_mode: "{{ vzdump_initial_mode }}"
+vzdump_backup_storage: "{{ nas_storage_id }}"
+vzdump_backup_stop_guests_first: false
+vzdump_backup_restore_power_state: false
+vzdump_backup_manifest_dir: "{{ remote_work_dir }}/manifests"
+vzdump_backup_require_no_active_tasks: true
+vzdump_backup_min_free_multiplier: 1.3

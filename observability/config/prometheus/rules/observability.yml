@@ -1,0 +1,78 @@
+---
+groups:
+  - name: observability
+    rules:
+      - alert: PrometheusRuleEvaluationFailures
+        expr: increase(prometheus_rule_evaluation_failures_total[15m]) > 0
+        labels:
+          severity: warning
+        annotations:
+          summary: "Prometheus rule evaluation failed"
+          description: "At least one alerting or recording rule failed in the last 15 minutes."
+
+      - alert: PrometheusTsdbReloadFailures
+        expr: increase(prometheus_tsdb_reloads_failures_total[15m]) > 0
+        labels:
+          severity: critical
+        annotations:
+          summary: "Prometheus TSDB reload failed"
+          description: "Inspect Prometheus storage and logs before restarting it."
+
+      - alert: LokiDiscardingLogs
+        expr: sum(increase(loki_discarded_samples_total[10m])) > 0
+        labels:
+          severity: warning
+        annotations:
+          summary: "Loki is discarding log entries"
+          description: "Loki rejected or discarded log entries during the last ten minutes."
+
+      # This alert existed from the start and was INERT until 2026-09-19. The
+      # metric it reads is written by backup.sh into the node_exporter textfile
+      # directory, but the script's `umask 077` made that file 0600 root:root
+      # and the node_exporter container runs as `nobody`. The collector could
+      # not read it, so the series never existed, and `time() - <missing series>`
+      # evaluates to an empty vector. An empty vector never fires. The alert was
+      # silent through six consecutive backup failures (2026-09-11 to 09-16).
+      # backup.sh now chmods the file to 0644. The two alerts BELOW exist so
+      # this one can never silently go vacuous again - never delete them.
+      - alert: ObservabilityBackupStale
+        expr: time() - homelab_observability_backup_last_success_timestamp_seconds > 36 * 3600
+        for: 15m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Observability application backup is stale"
+          description: "No successful application-aware backup has completed in 36 hours."
+
+      # Guard 1: the freshness metric disappearing is itself the failure mode
+      # that hid the problem for weeks. Without this, a regression in the file
+      # mode, the mount, or the collector would make ObservabilityBackupStale
+      # silently unfireable and indistinguishable from a healthy backup.
+      - alert: ObservabilityBackupMetricMissing
+        expr: absent(homelab_observability_backup_last_success_timestamp_seconds)
+        for: 30m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Backup freshness metric has disappeared"
+          description: >-
+            homelab_observability_backup_last_success_timestamp_seconds is absent
+            from Prometheus, so ObservabilityBackupStale cannot fire and backup
+            failures are invisible. Check the textfile file mode
+            (/var/lib/node_exporter/textfile, must be world-readable), the
+            node_exporter bind mount, and node_textfile_scrape_error.
+
+      # Guard 2: catch the collector failing for any reason - permissions, a
+      # malformed .prom file, or a broken mount - rather than only noticing when
+      # a specific series vanishes.
+      - alert: NodeTextfileCollectorFailing
+        expr: node_textfile_scrape_error > 0
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: "node_exporter textfile collector is failing"
+          description: >-
+            node_textfile_scrape_error is non-zero, so at least one .prom file
+            cannot be read. Any alert depending on a textfile metric may be
+            silently inert. Check `docker logs` for the node-exporter container.

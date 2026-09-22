@@ -1,0 +1,180 @@
+---
+- name: Update Home Lab observability dashboards and alert rules
+  hosts: observability_servers
+  become: true
+  gather_facts: false
+  serial: 1
+  any_errors_fatal: true
+  tasks:
+    - name: Require exact dashboard update approval
+      ansible.builtin.assert:
+        that:
+          - allow_observability_dashboard_update | bool
+          - >-
+            observability_dashboard_update_confirmation ==
+            observability_dashboard_update_required_confirmation
+        fail_msg: >-
+          Dashboard update is blocked. Provide the boolean approval and exact
+          confirmation string documented in docs/deployment.md.
+
+    - name: Verify the central configuration directories exist
+      ansible.builtin.stat:
+        path: "{{ item }}"
+      loop:
+        - /opt/observability/config/grafana/dashboards
+        - /opt/observability/config/prometheus/rules
+        - /opt/observability/config/prometheus/file_sd
+        - /opt/observability/config/blackbox
+      register: observability_dashboard_update_directories
+
+    - name: Refuse dashboard update on an unexpected host layout
+      ansible.builtin.assert:
+        that:
+          - item.stat.exists
+          - item.stat.isdir
+        fail_msg: "Expected central observability configuration directory is absent."
+      loop: "{{ observability_dashboard_update_directories.results }}"
+      loop_control:
+        label: "{{ item.item }}"
+
+    - name: Install version-controlled Grafana dashboards
+      ansible.builtin.copy:
+        src: "{{ playbook_dir }}/../../config/grafana/dashboards/"
+        dest: /opt/observability/config/grafana/dashboards/
+        owner: root
+        group: root
+        mode: preserve
+
+    - name: Install version-controlled Prometheus alert rules
+      ansible.builtin.copy:
+        src: "{{ playbook_dir }}/../../config/prometheus/rules/"
+        dest: /opt/observability/config/prometheus/rules/
+        owner: root
+        group: root
+        mode: preserve
+
+    - name: Install version-controlled Prometheus file_sd targets
+      ansible.builtin.copy:
+        src: "{{ playbook_dir }}/../../config/prometheus/file_sd/"
+        dest: /opt/observability/config/prometheus/file_sd/
+        owner: root
+        group: root
+        mode: preserve
+
+    - name: Install version-controlled Blackbox exporter modules
+      ansible.builtin.copy:
+        src: "{{ playbook_dir }}/../../config/blackbox/"
+        dest: /opt/observability/config/blackbox/
+        owner: root
+        group: root
+        mode: preserve
+      notify: Reload Blackbox exporter configuration via SIGHUP
+
+    # promtool takes rule files, not a directory, so the glob is expanded by the
+    # container's own shell. A missing or unreadable file fails the stage before
+    # Prometheus is asked to reload.
+    - name: Validate all Prometheus rule files before reload
+      ansible.builtin.command:
+        argv:
+          - docker
+          - exec
+          - homelab-observability-prometheus-1
+          - sh
+          - -c
+          - promtool check rules /etc/prometheus/rules/*.yml
+      changed_when: false
+
+    # Flush before Prometheus reload so Blackbox is already serving the new
+    # modules when file_sd starts probing the corrected hostnames.
+    - name: Apply pending Blackbox reload before Prometheus reload
+      ansible.builtin.meta: flush_handlers
+
+    - name: Reload Prometheus configuration without restarting containers
+      ansible.builtin.uri:
+        url: "http://{{ firewall_observability_ip }}:9090/-/reload"
+        method: POST
+        status_code: 200
+
+    - name: Wait for Grafana file provisioning and file_sd refresh
+      ansible.builtin.pause:
+        seconds: 60
+
+    - name: Query Synology RAID metrics after dashboard update
+      ansible.builtin.uri:
+        url: >-
+          http://{{ firewall_observability_ip }}:9090/api/v1/query?query=raidStatus%7Bjob%3D%22synology-snmp%22%7D
+        return_content: true
+        status_code: 200
+      register: observability_dashboard_update_synology_raid
+
+    - name: Query Synology disk metrics after dashboard update
+      ansible.builtin.uri:
+        url: >-
+          http://{{ firewall_observability_ip }}:9090/api/v1/query?query=diskTemperature%7Bjob%3D%22synology-snmp%22%7D
+        return_content: true
+        status_code: 200
+      register: observability_dashboard_update_synology_disks
+
+    - name: Assert Synology dashboard metric inputs are populated
+      ansible.builtin.assert:
+        that:
+          - observability_dashboard_update_synology_raid.json.status == "success"
+          - observability_dashboard_update_synology_raid.json.data.result | length > 0
+          - observability_dashboard_update_synology_disks.json.status == "success"
+          - observability_dashboard_update_synology_disks.json.data.result | length > 0
+        fail_msg: "Synology dashboard inputs remain absent after the update."
+
+    - name: Prove corrected Homepage and Uptime Kuma HTTPS probes succeed
+      ansible.builtin.uri:
+        url: >-
+          http://{{ firewall_observability_ip }}:9090/api/v1/query?query={{
+            ('probe_success{job="blackbox-https",instance="' ~ item ~ '"}')
+            | urlencode
+          }}
+        return_content: true
+        status_code: 200
+      loop:
+        - https://home.lab.example.com/
+        - https://status.lab.example.com/
+      register: observability_dashboard_update_https_probes
+
+    - name: Assert corrected HTTPS probes report success
+      ansible.builtin.assert:
+        that:
+          - item.json.status == "success"
+          - item.json.data.result | length == 1
+          - item.json.data.result[0].value[1] | string == "1"
+        fail_msg: "HTTPS probe for {{ item.item }} did not report success after the update."
+      loop: "{{ observability_dashboard_update_https_probes.results }}"
+      loop_control:
+        label: "{{ item.item }}"
+
+    - name: Confirm retired wrong hostnames are no longer scraped
+      ansible.builtin.uri:
+        url: >-
+          http://{{ firewall_observability_ip }}:9090/api/v1/query?query={{
+            'probe_success{job="blackbox-https",instance=~"homepage|uptime"}'
+            | urlencode
+          }}
+        return_content: true
+        status_code: 200
+      register: observability_dashboard_update_retired_probes
+
+    - name: Assert retired wrong hostnames are gone
+      ansible.builtin.assert:
+        that:
+          - observability_dashboard_update_retired_probes.json.status == "success"
+          - observability_dashboard_update_retired_probes.json.data.result | length == 0
+        fail_msg: "Retired homepage/uptime probes are still present after the update."
+
+  handlers:
+    # Blackbox has no lifecycle endpoint enabled; SIGHUP reloads modules without
+    # recreating the container or touching the rest of the stack.
+    - name: Reload Blackbox exporter configuration via SIGHUP
+      ansible.builtin.command:
+        argv:
+          - docker
+          - kill
+          - --signal=HUP
+          - homelab-observability-blackbox-exporter-1
+      changed_when: true

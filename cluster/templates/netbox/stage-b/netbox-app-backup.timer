@@ -1,0 +1,11 @@
+[Unit]
+Description=Run the application-aware NetBox backup at 03:45 daily
+
+[Timer]
+OnCalendar=*-*-* 03:45:00
+Persistent=true
+AccuracySec=1min
+Unit=netbox-app-backup.service
+
+[Install]
+WantedBy=timers.target

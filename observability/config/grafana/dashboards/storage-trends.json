@@ -1,0 +1,10 @@
+{
+  "annotations": {"list": []}, "description": "Slow-moving capacity and write-rate trends, for spotting a disk filling up weeks before it becomes an incident. Prometheus is capped at 15 days and 8 GiB, so its own footprint should plateau rather than grow without bound.", "editable": false, "graphTooltip": 1,
+  "panels": [
+    {"datasource": {"type": "prometheus", "uid": "prometheus"}, "fieldConfig": {"defaults": {"unit": "bytes"}, "overrides": []}, "gridPos": {"h": 8, "w": 12, "x": 0, "y": 0}, "id": 1, "targets": [{"expr": "prometheus_tsdb_storage_blocks_bytes + prometheus_tsdb_wal_storage_size_bytes", "legendFormat": "Prometheus"}], "description": "On-disk size of the Prometheus TSDB including its write-ahead log. Retention is capped at 15 days and 8 GiB, so this should level off rather than climb indefinitely.", "title": "Prometheus disk footprint", "type": "timeseries"},
+    {"datasource": {"type": "prometheus", "uid": "prometheus"}, "fieldConfig": {"defaults": {"unit": "Bps"}, "overrides": []}, "gridPos": {"h": 8, "w": 12, "x": 12, "y": 0}, "id": 2, "targets": [{"expr": "sum by (instance) (rate(node_disk_written_bytes_total[5m]))", "legendFormat": "{{instance}}"}], "description": "Bytes written per second per host. Useful for confirming that a nightly backup actually ran, and for spotting a runaway writer.", "title": "Host write rate", "type": "timeseries"},
+    {"datasource": {"type": "prometheus", "uid": "prometheus"}, "fieldConfig": {"defaults": {"unit": "bytes"}, "overrides": []}, "gridPos": {"h": 9, "w": 24, "x": 0, "y": 8}, "id": 3, "targets": [{"expr": "node_filesystem_avail_bytes{mountpoint=~\"/|/srv.*\"}", "legendFormat": "{{instance}} {{mountpoint}}"}], "description": "Free space on the root and /srv filesystems over time. The slope matters more than the value - a steady decline gives weeks of warning before anything fills.", "title": "Available storage trend", "type": "timeseries"}
+  ],
+  "refresh": "2m", "schemaVersion": 41, "tags": ["homelab", "capacity"], "templating": {"list": []}, "time": {"from": "now-7d", "to": "now"}, "title": "Storage and Capacity Trends", "uid": "homelab-storage", "version": 1
+}
+

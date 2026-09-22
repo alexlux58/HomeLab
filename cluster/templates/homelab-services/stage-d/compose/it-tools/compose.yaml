@@ -1,0 +1,40 @@
+---
+name: homelab-it-tools
+
+services:
+  it-tools:
+    image: corentinth/it-tools:2024.10.22-7ca5933@sha256:6f177c156b9466610e0f2093e24668b78da501c66f0054f98bccb582b74ab26b
+    container_name: it-tools
+    restart: unless-stopped
+    expose:
+      - "80"
+    networks:
+      homelab_proxy:
+        aliases:
+          - it-tools
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - wget -q --spider http://127.0.0.1/ || exit 1
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+    read_only: true
+    tmpfs:
+      - /tmp:size=16m,mode=1777
+      - /var/cache/nginx:size=16m,mode=0755
+      - /var/run:size=1m,mode=0755
+    security_opt:
+      - no-new-privileges:true
+    mem_limit: 128m
+    mem_reservation: 32m
+    cpus: 0.5
+    pids_limit: 128
+    labels:
+      com.examplelab.homelab.role: utility
+      com.examplelab.homelab.state: none
+
+networks:
+  homelab_proxy:
+    external: true

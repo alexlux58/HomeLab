@@ -1,0 +1,143 @@
+---
+- name: Install base operating-system packages
+  ansible.builtin.apt:
+    name: "{{ homelab_guest_base_packages }}"
+    state: present
+    update_cache: true
+    cache_valid_time: 3600
+
+- name: Create APT keyring directory
+  ansible.builtin.file:
+    path: /etc/apt/keyrings
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Install Docker repository signing key
+  ansible.builtin.get_url:
+    url: https://download.docker.com/linux/ubuntu/gpg
+    dest: /etc/apt/keyrings/docker.asc
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Install Docker APT source
+  ansible.builtin.copy:
+    src: "{{ homelab_guest_base_assets_root }}/docker.sources"
+    dest: /etc/apt/sources.list.d/docker.sources
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Install Docker Engine and Compose
+  ansible.builtin.apt:
+    name: "{{ homelab_guest_base_docker_packages }}"
+    state: present
+    update_cache: true
+
+- name: Install bounded Docker daemon configuration
+  ansible.builtin.copy:
+    src: "{{ homelab_guest_base_assets_root }}/docker-daemon.json"
+    dest: /etc/docker/daemon.json
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Restart Docker
+
+- name: Install hardened kernel settings
+  ansible.builtin.copy:
+    src: "{{ homelab_guest_base_assets_root }}/99-homelab-sysctl.conf"
+    dest: /etc/sysctl.d/99-homelab.conf
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Apply hardened kernel settings
+  ansible.builtin.command:
+    argv: [sysctl, --system]
+  changed_when: false
+
+- name: Create the journald drop-in directory
+  ansible.builtin.file:
+    path: /etc/systemd/journald.conf.d
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Install bounded journal configuration
+  ansible.builtin.copy:
+    src: "{{ homelab_guest_base_assets_root }}/99-homelab-journald.conf"
+    dest: /etc/systemd/journald.conf.d/99-homelab.conf
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Restart journald
+
+- name: Install hardened SSH configuration
+  ansible.builtin.template:
+    src: "{{ homelab_guest_base_assets_root }}/99-homelab-sshd.conf.j2"
+    dest: /etc/ssh/sshd_config.d/99-homelab.conf
+    owner: root
+    group: root
+    mode: "0644"
+    validate: /usr/sbin/sshd -t -f %s
+  notify: Restart SSH
+
+- name: Install Docker ingress firewall script
+  ansible.builtin.copy:
+    src: "{{ homelab_guest_base_assets_root }}/homelab-docker-firewall.sh"
+    dest: /usr/local/sbin/homelab-docker-firewall
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Install Docker ingress firewall service override directory
+  ansible.builtin.file:
+    path: /etc/systemd/system/docker.service.d
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Install Docker ingress firewall service override
+  ansible.builtin.copy:
+    src: "{{ homelab_guest_base_assets_root }}/docker-firewall.conf"
+    dest: /etc/systemd/system/docker.service.d/firewall.conf
+    owner: root
+    group: root
+    mode: "0644"
+  notify:
+    - Reload systemd
+    - Restart Docker
+
+- name: Create Home Lab filesystem roots
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "{{ item.mode }}"
+  loop:
+    - {path: /opt/homelab/compose, mode: "0755"}
+    - {path: /opt/homelab/apps, mode: "0755"}
+    - {path: /srv/homelab, mode: "0755"}
+    - {path: /etc/homelab/secret-store, mode: "0700"}
+
+- name: Enable required guest services
+  ansible.builtin.service:
+    name: "{{ item }}"
+    enabled: true
+    state: started
+  loop:
+    - docker
+    - qemu-guest-agent
+
+- name: Flush base configuration handlers before validation
+  ansible.builtin.meta: flush_handlers
+
+- name: Validate Docker daemon and Compose
+  ansible.builtin.command:
+    argv: [docker, compose, version]
+  changed_when: false

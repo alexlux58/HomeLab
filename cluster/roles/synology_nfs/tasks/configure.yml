@@ -1,0 +1,87 @@
+---
+# Registers the NFS export as a Proxmox storage. This is a change, so it is
+# gated. It is not destructive: it adds a storage definition and never removes
+# or prunes anything.
+
+- name: Pin the Proxmox storage to the version the preflight negotiated
+  ansible.builtin.set_fact:
+    synology_nfs_storage_options: >-
+      {{ ('vers=' ~ synology_nfs_negotiated_version ~ ',' ~ nas_mount_options)
+         if (synology_nfs_negotiated_version | default('unknown')) != 'unknown'
+         else nas_mount_options }}
+
+- name: Require explicit approval before changing Proxmox storage configuration
+  ansible.builtin.assert:
+    that:
+      - allow_configure_nfs_storage | bool
+    fail_msg: |
+      Refusing to add the '{{ nas_storage_id }}' storage without approval.
+      Re-run with:
+        -e allow_configure_nfs_storage=true
+
+- name: Check whether the storage already exists
+  ansible.builtin.command:
+    argv: [pvesm, status, --storage, "{{ nas_storage_id }}"]
+  changed_when: false
+  failed_when: false
+  register: synology_nfs_existing
+
+- name: Show the proposed storage change before applying it
+  ansible.builtin.debug:
+    msg:
+      - "PROPOSED CHANGE on {{ inventory_hostname }}:"
+      - "  pvesm add nfs {{ nas_storage_id }}"
+      - "    --server {{ nas_ip }}"
+      - "    --export {{ nas_export_path }}"
+      - "    --content {{ nas_storage_content }}"
+      - "    --options {{ synology_nfs_storage_options }}"
+      - "    --prune-backups {{ synology_nfs_prune_policy }}   # never prune"
+      - "  current state: {{ 'already defined' if synology_nfs_existing.rc == 0 else 'not defined' }}"
+
+- name: Add the Synology NFS storage
+  ansible.builtin.command:
+    argv:
+      - pvesm
+      - add
+      - nfs
+      - "{{ nas_storage_id }}"
+      - --server
+      - "{{ nas_ip }}"
+      - --export
+      - "{{ nas_export_path }}"
+      - --content
+      - "{{ nas_storage_content }}"
+      - --options
+      - "{{ synology_nfs_storage_options }}"
+      - --prune-backups
+      - "{{ synology_nfs_prune_policy }}"
+  changed_when: true
+  when: synology_nfs_existing.rc != 0
+
+- name: Re-read the storage status
+  ansible.builtin.command:
+    argv: [pvesm, status, --storage, "{{ nas_storage_id }}"]
+  changed_when: false
+  register: synology_nfs_after
+
+- name: Assert the storage is active
+  ansible.builtin.assert:
+    that:
+      - "'active' in synology_nfs_after.stdout"
+    fail_msg: "Storage {{ nas_storage_id }} was added but is not active: {{ synology_nfs_after.stdout }}"
+
+- name: Assert Proxmox actually mounted it from the NAS and not from local disk
+  ansible.builtin.command:
+    argv: [findmnt, -n, -o, "SOURCE,FSTYPE", "/mnt/pve/{{ nas_storage_id }}"]
+  changed_when: false
+  register: synology_nfs_pve_mount
+
+- name: Verify the Proxmox mount source
+  ansible.builtin.assert:
+    that:
+      - synology_nfs_pve_mount.stdout.startswith(nas_ip ~ ':')
+      - nas_required_volume_prefix in synology_nfs_pve_mount.stdout
+      - "'nfs' in synology_nfs_pve_mount.stdout"
+    fail_msg: >-
+      /mnt/pve/{{ nas_storage_id }} is not an NFS mount from {{ nas_ip }}
+      ({{ synology_nfs_pve_mount.stdout }}). Backups would land on local disk. Aborting.

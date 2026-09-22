@@ -1,0 +1,83 @@
+---
+# Stage 0. Everything in this role is read-only: it copies a collector script to
+# the host, runs it, reads the JSON it prints and removes nothing else.
+
+- name: Ensure the migration scratch directory exists
+  ansible.builtin.file:
+    path: "{{ remote_work_dir }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0700"
+
+- name: Stage the read-only collector
+  ansible.builtin.copy:
+    src: pve_discover.py
+    dest: "{{ discovery_remote_script }}"
+    owner: root
+    group: root
+    mode: "0700"
+
+- name: Run the read-only discovery collector
+  ansible.builtin.command:
+    # Built as a list so the optional flag is either present or absent — an
+    # empty string element would be passed through as an argument and rejected.
+    argv: >-
+      {{ ['/usr/bin/python3', discovery_remote_script,
+          '--task-limit', discovery_task_limit | string]
+         + (['--probe-agent'] if discovery_probe_agent | bool else []) }}
+  changed_when: false
+  register: discovery_raw
+  timeout: "{{ discovery_timeout_seconds }}"
+
+- name: Parse the collector output
+  ansible.builtin.set_fact:
+    discovery_host_document: "{{ discovery_raw.stdout | from_json }}"
+
+- name: Attach the inventory context to the host document
+  ansible.builtin.set_fact:
+    discovery_host_document: >-
+      {{ discovery_host_document | combine({
+           'inventory': {
+             'inventory_hostname': inventory_hostname,
+             'ansible_host': ansible_host,
+             'expected_hostname': expected_hostname,
+             'preserve_guests': preserve_guests,
+             'cluster_seed': cluster_seed,
+             'role_note': role_note | default('')
+           }
+         }) }}
+
+- name: Assert discovery reported the expected hostname
+  ansible.builtin.assert:
+    that:
+      - discovery_host_document.system.hostname == expected_hostname
+    fail_msg: "Discovery on {{ inventory_hostname }} reported an unexpected hostname."
+
+- name: Assert every declared protected guest was actually found
+  ansible.builtin.assert:
+    that:
+      - (protected_guests[inventory_hostname] | map(attribute='vmid') | map('int') | sort)
+        is subset(discovery_host_document.guests | map(attribute='vmid') | map('int') | sort)
+    fail_msg: |
+      Protected guests declared in group_vars are missing from {{ inventory_hostname }}.
+        declared: {{ protected_guests[inventory_hostname] | map(attribute='vmid') | list | sort }}
+        found:    {{ discovery_host_document.guests | map(attribute='vmid') | list | sort }}
+      Fix inventory/group_vars/all.yml or investigate the host before continuing.
+  when: inventory_hostname in (protected_guests | default({}))
+
+- name: Warn about guests whose backup would be incomplete
+  ansible.builtin.debug:
+    msg: >-
+      WARNING {{ inventory_hostname }} VMID {{ item.vmid }} ({{ item.name }}):
+      {{ item.disks | selectattr('backup', 'equalto', false) | map(attribute='key') | list }}
+      have backup=0 and will NOT be included in a vzdump archive.
+  loop: "{{ discovery_host_document.guests }}"
+  loop_control:
+    label: "{{ item.vmid }}"
+  when: item.disks | selectattr('backup', 'equalto', false) | list | length > 0
+
+- name: Remove the staged collector (leave no tooling behind)
+  ansible.builtin.file:
+    path: "{{ discovery_remote_script }}"
+    state: absent

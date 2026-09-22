@@ -1,0 +1,12 @@
+# Copy to terraform.tfvars and review before planning. Never commit the real file.
+#
+# The API token is supplied through the environment, not this file:
+#   export TF_VAR_proxmox_api_token='terraform@pve!home-lab=REDACTED'
+
+ssh_public_keys = [
+  "ssh-ed25519 AAAA... homelab-netbox",
+]
+
+# Leave start_after_create false until the the router reservation for the MAC, the
+# explicit netbox.lab.example.com DNS record, and console access are all ready.
+start_after_create = false

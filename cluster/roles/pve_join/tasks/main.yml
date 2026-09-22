@@ -1,0 +1,33 @@
+---
+# Stages 8 and 9c. Joining is the single most destructive-by-accident operation
+# in Proxmox: `pvecm add` OVERWRITES the joining node's /etc/pve, which is why
+# the node must be empty first, and why every gate below exists.
+#
+# Reference: https://pve.proxmox.com/wiki/Cluster_Manager
+
+- name: Include the join preconditions
+  ansible.builtin.include_tasks: precheck.yml
+
+- name: Require explicit approval before joining
+  ansible.builtin.assert:
+    that:
+      - pve_join_allow | bool
+      - pve_join_confirmation == pve_join_confirmation_required
+    fail_msg: |
+      Refusing to join {{ inventory_hostname }} ({{ ansible_host }}) to '{{ cluster_name }}'.
+      Re-run with BOTH of:
+        -e {{ pve_join_allow_var | default('allow_join_' ~ inventory_hostname) }}=true
+        -e {{ pve_join_confirmation_var | default('join_confirmation_' ~ inventory_hostname) }}='{{ pve_join_confirmation_required }}'
+
+- name: Perform the join using pre-established root key trust
+  ansible.builtin.include_tasks: join_ssh_key_trust.yml
+  when: join_method == 'ssh_key_trust'
+
+- name: Guide the operator through the manual join
+  ansible.builtin.include_tasks: join_manual.yml
+  when:
+    - join_method != 'ssh_key_trust'
+    - not (pve_join_executed | bool)
+
+- name: Validate the resulting membership
+  ansible.builtin.include_tasks: validate.yml

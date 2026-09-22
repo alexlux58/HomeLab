@@ -1,0 +1,7 @@
+# Never place the API token in this file. Export it only for the current shell:
+# export TF_VAR_proxmox_api_token='terraform@pve!home-lab=...'
+
+proxmox_endpoint     = "https://192.168.0.11:8006"
+proxmox_tls_insecure = true
+homelab_services_node = "pve2"
+observability_node    = "pve1"

@@ -1,0 +1,5 @@
+---
+- targets: ["192.168.0.20"]
+  labels:
+    host: nas1
+    role: nas

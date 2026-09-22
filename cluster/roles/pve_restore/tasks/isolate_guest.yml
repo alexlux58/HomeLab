@@ -1,0 +1,67 @@
+---
+# metasploitable2 and anything else marked isolated must not be able to talk to
+# the network the moment it is restored. Two supported modes:
+#   link_down       — every NIC is administratively disconnected
+#   isolated_bridge — every NIC is moved to an explicitly approved lab bridge
+
+- name: "Read the restored configuration for {{ plan_entry.target_vmid }}"
+  ansible.builtin.slurp:
+    src: "/etc/pve/qemu-server/{{ plan_entry.target_vmid }}.conf"
+  register: pve_restore_isolate_config
+
+- name: "Disconnect every NIC of guest {{ plan_entry.name }}"
+  ansible.builtin.command:
+    argv:
+      - qm
+      - set
+      - "{{ plan_entry.target_vmid }}"
+      - "--{{ item.key }}"
+      - "{{ item.model }}={{ item.mac }},bridge={{ item.bridge }},link_down=1"
+  changed_when: true
+  loop: "{{ plan_entry.nics }}"
+  loop_control:
+    label: "{{ item.key }}"
+  when: plan_entry.isolation == 'link_down'
+
+- name: "Move every NIC onto the approved isolated bridge for {{ plan_entry.name }}"
+  ansible.builtin.command:
+    argv:
+      - qm
+      - set
+      - "{{ plan_entry.target_vmid }}"
+      - "--{{ item.key }}"
+      - "{{ item.model }}={{ item.mac }},bridge={{ isolated_lab_bridge }}"
+  changed_when: true
+  loop: "{{ plan_entry.nics }}"
+  loop_control:
+    label: "{{ item.key }}"
+  when:
+    - plan_entry.isolation == 'isolated_bridge'
+    - isolated_lab_bridge | length > 0
+
+- name: "Assert an isolated bridge was actually configured when that mode is used"
+  ansible.builtin.assert:
+    that:
+      - isolated_lab_bridge | length > 0
+    fail_msg: >-
+      isolation mode 'isolated_bridge' was requested for {{ plan_entry.name }} but
+      isolated_lab_bridge is empty. Set it to an approved, non-routed bridge.
+  when: plan_entry.isolation == 'isolated_bridge'
+
+- name: "Verify the isolation actually took effect"
+  ansible.builtin.command:
+    argv: [qm, config, "{{ plan_entry.target_vmid }}"]
+  changed_when: false
+  register: pve_restore_isolate_verify
+
+- name: "Assert every NIC is isolated"
+  ansible.builtin.assert:
+    that:
+      - (pve_restore_isolate_verify.stdout_lines | select('match', '^net[0-9]+:') | select('search', 'link_down=1') | list | length)
+        == (pve_restore_isolate_verify.stdout_lines | select('match', '^net[0-9]+:') | list | length)
+    fail_msg: |
+      {{ plan_entry.name }} (VMID {{ plan_entry.target_vmid }}) is NOT fully isolated:
+      {{ pve_restore_isolate_verify.stdout_lines | select('match', '^net[0-9]+:') | list }}
+      This guest is intentionally vulnerable and must never reach a routed network.
+    success_msg: "{{ plan_entry.name }} is isolated: every NIC has link_down=1."
+  when: plan_entry.isolation == 'link_down'

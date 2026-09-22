@@ -1,0 +1,10 @@
+{
+  "annotations": {"list": []}, "description": "Node Exporter view of the Linux guests. Until Observability Stage I-G installs agents on VM 300, VM 310 is the only reporting host, so a short series list is expected rather than a collection failure.", "editable": false, "graphTooltip": 1,
+  "panels": [
+    {"datasource": {"type": "prometheus", "uid": "prometheus"}, "fieldConfig": {"defaults": {"unit": "percent"}, "overrides": []}, "gridPos": {"h": 8, "w": 12, "x": 0, "y": 0}, "id": 1, "targets": [{"expr": "100 - avg by (instance) (rate(node_cpu_seconds_total{mode=\"idle\"}[5m])) * 100", "legendFormat": "{{instance}}"}], "description": "Percentage of CPU time not spent idle, per host, averaged over five minutes.", "title": "CPU use", "type": "timeseries"},
+    {"datasource": {"type": "prometheus", "uid": "prometheus"}, "fieldConfig": {"defaults": {"unit": "percentunit"}, "overrides": []}, "gridPos": {"h": 8, "w": 12, "x": 12, "y": 0}, "id": 2, "targets": [{"expr": "1 - node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes", "legendFormat": "{{instance}}"}], "description": "Fraction of memory unavailable to new work. This uses MemAvailable, so cached data that the kernel can reclaim is correctly counted as free.", "title": "Memory use", "type": "timeseries"},
+    {"datasource": {"type": "prometheus", "uid": "prometheus"}, "fieldConfig": {"defaults": {"unit": "percentunit"}, "overrides": []}, "gridPos": {"h": 9, "w": 24, "x": 0, "y": 8}, "id": 3, "targets": [{"expr": "1 - node_filesystem_avail_bytes{fstype!~\"tmpfs|overlay|squashfs\"} / node_filesystem_size_bytes{fstype!~\"tmpfs|overlay|squashfs\"}", "legendFormat": "{{instance}} {{mountpoint}}"}], "description": "Fraction of each real filesystem consumed; tmpfs, overlay, and squashfs mounts are excluded because they are not durable storage.", "title": "Filesystem use", "type": "timeseries"}
+  ],
+  "refresh": "1m", "schemaVersion": 41, "tags": ["homelab", "linux"], "templating": {"list": []}, "time": {"from": "now-24h", "to": "now"}, "title": "Linux Hosts", "uid": "homelab-linux", "version": 1
+}
+

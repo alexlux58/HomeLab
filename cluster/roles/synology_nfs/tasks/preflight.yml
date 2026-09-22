@@ -1,0 +1,246 @@
+---
+# Stage 1. Proves, from this host, that the Synology export is reachable,
+# writable, on the RIGHT volume, and big enough. Aborts loudly otherwise.
+#
+# Nothing on the Synology is modified: the DSM share and its NFS rule are
+# created by hand through the DSM UI (see docs/synology-nfs-setup.md), and
+# /etc/exports on the NAS is never touched.
+
+- name: Refuse to proceed if the configured export is on a forbidden volume
+  ansible.builtin.assert:
+    that:
+      - nas_export_path is match('^' ~ nas_required_volume_prefix)
+      - nas_export_path is not search(item)
+    fail_msg: >-
+      REFUSING: nas_export_path '{{ nas_export_path }}' touches '{{ item }}'.
+      Volume 2 lives on Storage Pool 1, which reports 0 bytes free and a health
+      warning. Backups must only ever be written to Volume 1 / Storage Pool 2.
+  loop: "{{ nas_forbidden_path_prefixes }}"
+  loop_control:
+    label: "{{ item }}"
+
+- name: Check ICMP reachability of the NAS (informational)
+  ansible.builtin.command:
+    argv: [ping, -c, "3", -W, "2", "{{ nas_ip }}"]
+  changed_when: false
+  failed_when: false
+  register: synology_nfs_ping
+
+- name: Check the NFS and rpcbind ports are open
+  ansible.builtin.wait_for:
+    host: "{{ nas_ip }}"
+    port: "{{ item }}"
+    timeout: "{{ synology_nfs_connect_timeout }}"
+    state: started
+  loop:
+    - "{{ synology_nfs_port }}"
+    - "{{ synology_nfs_rpcbind_port }}"
+  loop_control:
+    label: "port {{ item }}"
+
+- name: List the exports the NAS advertises to this host
+  ansible.builtin.command:
+    argv: [showmount, -e, "{{ nas_ip }}"]
+  changed_when: false
+  register: synology_nfs_exports
+  failed_when: synology_nfs_exports.rc != 0
+
+- name: Show the advertised exports
+  ansible.builtin.debug:
+    var: synology_nfs_exports.stdout_lines
+
+- name: Assert the expected export is advertised to this host
+  ansible.builtin.assert:
+    that:
+      - nas_export_path in synology_nfs_exports.stdout
+    fail_msg: |
+      The NAS does not advertise '{{ nas_export_path }}' to {{ inventory_hostname }}
+      ({{ ansible_host }}).
+
+      Create it in DSM (Control Panel -> Shared Folder -> proxmox-cluster-backups
+      -> Edit -> NFS Permissions -> Create) with a rule for THIS host's IP only.
+      See docs/synology-nfs-setup.md. Advertised right now:
+      {{ synology_nfs_exports.stdout }}
+
+- name: Assert no advertised export we intend to use lives on a forbidden volume
+  ansible.builtin.assert:
+    that:
+      - not (nas_export_path is search(item))
+    fail_msg: "Export path resolves onto forbidden volume {{ item }} — aborting."
+  loop: "{{ nas_forbidden_path_prefixes }}"
+
+- name: Create the temporary preflight mount point
+  ansible.builtin.file:
+    path: "{{ synology_nfs_probe_mount }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0700"
+
+- name: Mount, exercise and unmount the export
+  block:
+    - name: Mount the export read-write (transient, never written to /etc/fstab)
+      ansible.builtin.command:
+        argv:
+          - mount
+          - -t
+          - nfs
+          - -o
+          - "{{ nas_mount_options }}"
+          - "{{ nas_ip }}:{{ nas_export_path }}"
+          - "{{ synology_nfs_probe_mount }}"
+      changed_when: true
+      register: synology_nfs_mount
+
+    - name: Inspect what is actually mounted there
+      ansible.builtin.command:
+        argv: [findmnt, -J, -o, "SOURCE,TARGET,FSTYPE,OPTIONS", "{{ synology_nfs_probe_mount }}"]
+      changed_when: false
+      register: synology_nfs_findmnt
+
+    - name: Parse the mount details
+      ansible.builtin.set_fact:
+        synology_nfs_mount_info: "{{ (synology_nfs_findmnt.stdout | from_json).filesystems[0] }}"
+
+    - name: Assert this really is an NFS mount and not a silent local-directory fallback
+      ansible.builtin.assert:
+        that:
+          - synology_nfs_mount_info.fstype in synology_nfs_acceptable_fstypes
+          - synology_nfs_mount_info.source.startswith(nas_ip ~ ':')
+          - nas_required_volume_prefix in synology_nfs_mount_info.source
+        fail_msg: |
+          The path {{ synology_nfs_probe_mount }} is NOT a healthy NFS mount of the
+          Synology export. Writing backups here would silently fill the local root
+          filesystem instead of the NAS.
+            source: {{ synology_nfs_mount_info.source | default('none') }}
+            fstype: {{ synology_nfs_mount_info.fstype | default('none') }}
+        success_msg: "Mounted {{ synology_nfs_mount_info.source }} ({{ synology_nfs_mount_info.fstype }})."
+
+    - name: Show the raw mount details for the record
+      ansible.builtin.debug:
+        var: synology_nfs_mount_info
+
+    - name: Record the NFS version that was actually negotiated
+      # regex_search returns None when there is no match and `| first` on None
+      # raises, so the presence of vers= is tested before extracting it.
+      ansible.builtin.set_fact:
+        # Split rather than regex: no backreference, so no dependence on the
+        # YAML scalar style, and it reads as what it does.
+        synology_nfs_negotiated_version: >-
+          {{ (synology_nfs_mount_info.options.split(',')
+              | select('match', 'vers=') | list | first | default('vers=unknown')
+             ).split('=')[1] }}
+
+    - name: Assert the negotiated NFS version is modern enough
+      ansible.builtin.assert:
+        that:
+          - synology_nfs_negotiated_version != 'unknown'
+          - (synology_nfs_negotiated_version | float) >= (nas_minimum_nfs_major | float)
+        fail_msg: >-
+          The export negotiated NFS version '{{ synology_nfs_negotiated_version }}'.
+          Raise "Maximum NFS protocol" in DSM (Control Panel -> File Services -> NFS)
+          to at least NFSv4.1, or lower nas_minimum_nfs_major deliberately.
+        success_msg: "Negotiated NFSv{{ synology_nfs_negotiated_version }}."
+
+    - name: Assert the mount is not read-only
+      ansible.builtin.assert:
+        that:
+          - "'ro,' not in synology_nfs_mount_info.options"
+          - not synology_nfs_mount_info.options.endswith(',ro')
+          - not synology_nfs_mount_info.options.startswith('ro')
+        fail_msg: "The export is mounted read-only ({{ synology_nfs_mount_info.options }}); backups cannot be written."
+
+    - name: Measure free space on the export
+      ansible.builtin.command:
+        argv: [df, -B1, "--output=source,size,used,avail,pcent", "{{ synology_nfs_probe_mount }}"]
+      changed_when: false
+      register: synology_nfs_df
+
+    - name: Record the NAS capacity figures
+      ansible.builtin.set_fact:
+        synology_nfs_capacity:
+          source: "{{ synology_nfs_df.stdout_lines[1].split()[0] }}"
+          total_bytes: "{{ synology_nfs_df.stdout_lines[1].split()[1] | int }}"
+          used_bytes: "{{ synology_nfs_df.stdout_lines[1].split()[2] | int }}"
+          avail_bytes: "{{ synology_nfs_df.stdout_lines[1].split()[3] | int }}"
+
+    - name: Assert the export has at least the absolute minimum free space
+      ansible.builtin.assert:
+        that:
+          - (synology_nfs_capacity.avail_bytes | int) > (nas_min_free_gib | int) * 1024 * 1024 * 1024
+        fail_msg: >-
+          Only {{ (synology_nfs_capacity.avail_bytes | int / 1024 / 1024 / 1024) | round(1) }} GiB free on
+          {{ synology_nfs_capacity.source }} — below the {{ nas_min_free_gib }} GiB floor. Aborting before
+          any backup is attempted.
+
+    - name: Write, read back and remove a uniquely named test file
+      ansible.builtin.shell: |
+        set -o pipefail
+        set -eu
+        probe="{{ synology_nfs_probe_mount }}/.preflight-{{ inventory_hostname }}-{{ ansible_date_time.epoch }}-$$.tmp"
+        start=$(date +%s.%N)
+        dd if=/dev/urandom of="$probe" bs=1M count={{ nas_preflight_test_size_mib }} \
+           conv=fsync status=none
+        end=$(date +%s.%N)
+        written=$(sha256sum "$probe" | awk '{print $1}')
+        sync
+        readback=$(sha256sum "$probe" | awk '{print $1}')
+        rm -f -- "$probe"
+        test ! -e "$probe"
+        elapsed=$(awk -v a="$start" -v b="$end" 'BEGIN{d=b-a; if (d<=0) d=0.001; print d}')
+        mbps=$(awk -v s={{ nas_preflight_test_size_mib }} -v d="$elapsed" 'BEGIN{printf "%.1f", s/d}')
+        printf '{"written":"%s","readback":"%s","mib_per_second":%s}\n' "$written" "$readback" "$mbps"
+      args:
+        executable: /bin/bash
+      changed_when: true
+      register: synology_nfs_write_test
+
+    - name: Parse the write/read test result
+      ansible.builtin.set_fact:
+        synology_nfs_write_result: "{{ synology_nfs_write_test.stdout | from_json }}"
+
+    - name: Assert the data read back matches what was written
+      ansible.builtin.assert:
+        that:
+          - synology_nfs_write_result.written == synology_nfs_write_result.readback
+        fail_msg: "Checksum mismatch reading back the NFS test file — the export is not trustworthy."
+
+    - name: Assert throughput is high enough for a multi-hundred-GiB backup
+      ansible.builtin.assert:
+        that:
+          - (synology_nfs_write_result.mib_per_second | float) >= (nas_preflight_min_write_mbps | float)
+        fail_msg: >-
+          Measured {{ synology_nfs_write_result.mib_per_second }} MiB/s to the NAS, below the
+          {{ nas_preflight_min_write_mbps }} MiB/s floor. Check the network path before
+          committing to a full backup window.
+        success_msg: "Measured {{ synology_nfs_write_result.mib_per_second }} MiB/s to the NAS."
+
+  always:
+    - name: Unmount the temporary preflight mount
+      ansible.builtin.command:
+        argv: [umount, "{{ synology_nfs_probe_mount }}"]
+      changed_when: true
+      failed_when: false
+
+    - name: Remove the temporary mount point
+      ansible.builtin.file:
+        path: "{{ synology_nfs_probe_mount }}"
+        state: absent
+
+- name: Check whether the Proxmox storage ID already exists
+  ansible.builtin.command:
+    argv: [pvesm, status, --storage, "{{ nas_storage_id }}"]
+  changed_when: false
+  failed_when: false
+  register: synology_nfs_storage_status
+
+- name: Report the Synology preflight outcome
+  ansible.builtin.debug:
+    msg:
+      - "host:            {{ inventory_hostname }} ({{ ansible_host }})"
+      - "export:          {{ nas_ip }}:{{ nas_export_path }}"
+      - "mount source:    {{ synology_nfs_mount_info.source }}"
+      - "fstype:          {{ synology_nfs_mount_info.fstype }} (NFSv{{ synology_nfs_negotiated_version }})"
+      - "free:            {{ (synology_nfs_capacity.avail_bytes | int / 1024 / 1024 / 1024) | round(1) }} GiB"
+      - "throughput:      {{ synology_nfs_write_result.mib_per_second }} MiB/s"
+      - "pve storage '{{ nas_storage_id }}': {{ 'present' if synology_nfs_storage_status.rc == 0 else 'NOT configured yet' }}"

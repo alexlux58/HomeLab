@@ -1,0 +1,261 @@
+---
+# Stage 11. Read-only end-to-end validation of the finished cluster.
+
+- name: Read the cluster status
+  ansible.builtin.command: pvecm status
+  changed_when: false
+  register: validation_cluster_status
+
+- name: Extract the total vote count
+  # Double-quoted on purpose: inside a folded (>-) scalar the '\\1'
+  # backreference is passed through verbatim and this would silently be "\\1".
+  ansible.builtin.set_fact:
+    validation_total_votes: "{{ validation_cluster_status.stdout | regex_search('Total votes:\\s+(\\d+)', '\\1') | first | default('0') }}"
+
+- name: Read the node membership
+  ansible.builtin.command: pvecm nodes
+  changed_when: false
+  register: validation_nodes
+
+- name: Read corosync ring status
+  ansible.builtin.command: corosync-cfgtool -s
+  changed_when: false
+  failed_when: false
+  register: validation_corosync
+
+- name: Read quorum details
+  ansible.builtin.command: corosync-quorumtool -s
+  changed_when: false
+  failed_when: false
+  register: validation_quorum
+
+- name: Assert the cluster is quorate
+  ansible.builtin.assert:
+    that:
+      - validation_cluster_status.stdout is search('Quorate:\\s+Yes')
+    fail_msg: "{{ inventory_hostname }} reports the cluster is not quorate."
+
+- name: Assert all three expected nodes are members
+  ansible.builtin.assert:
+    that:
+      - item in validation_nodes.stdout
+    fail_msg: "Expected node '{{ item }}' is not in the membership list on {{ inventory_hostname }}."
+  loop: "{{ expected_cluster_nodes }}"
+
+- name: Assert the expected number of votes
+  ansible.builtin.assert:
+    that:
+      - (validation_total_votes | int) == (expected_quorum_votes | int)
+    fail_msg: >-
+      Expected {{ expected_quorum_votes }} votes but the cluster reports
+      {{ validation_total_votes }}.
+
+- name: Assert every corosync ring is connected
+  ansible.builtin.assert:
+    that:
+      - "'FAULTY' not in validation_corosync.stdout"
+    fail_msg: "A corosync ring is faulty on {{ inventory_hostname }}: {{ validation_corosync.stdout }}"
+  when: validation_corosync.rc == 0
+
+- name: Check time synchronisation
+  ansible.builtin.command: timedatectl show
+  changed_when: false
+  register: validation_time
+
+- name: Assert the clock is synchronised
+  ansible.builtin.assert:
+    that:
+      - "'NTPSynchronized=yes' in validation_time.stdout"
+    fail_msg: "{{ inventory_hostname }} is not NTP-synchronised."
+
+- name: Read storage status
+  ansible.builtin.command:
+    argv: [pvesh, get, "/nodes/{{ expected_hostname }}/storage", --output-format, json]
+  changed_when: false
+  register: validation_storage
+
+- name: Assert every enabled storage is active
+  ansible.builtin.assert:
+    that:
+      - validation_storage.stdout | from_json | selectattr('enabled') | rejectattr('active') | list | length == 0
+    fail_msg: >-
+      Inactive storage on {{ inventory_hostname }}:
+      {{ validation_storage.stdout | from_json | selectattr('enabled') | rejectattr('active') | map(attribute='storage') | list }}
+
+- name: Assert the NAS backup storage is visible from this node
+  ansible.builtin.assert:
+    that:
+      - nas_storage_id in (validation_storage.stdout | from_json | map(attribute='storage') | list)
+    fail_msg: "Backup storage '{{ nas_storage_id }}' is not visible from {{ inventory_hostname }}."
+
+- name: Confirm the NAS storage is mounted from the NAS and on volume 1
+  ansible.builtin.command:
+    argv: [findmnt, -n, -o, "SOURCE,FSTYPE", "/mnt/pve/{{ nas_storage_id }}"]
+  changed_when: false
+  register: validation_nas_mount
+
+- name: Verify the NAS mount source
+  ansible.builtin.assert:
+    that:
+      - validation_nas_mount.stdout.startswith(nas_ip ~ ':')
+      - nas_required_volume_prefix in validation_nas_mount.stdout
+    fail_msg: "Backup storage is not mounted from {{ nas_ip }}{{ nas_required_volume_prefix }}."
+
+- name: List the backups visible on the NAS
+  ansible.builtin.command:
+    argv:
+      - pvesh
+      - get
+      - "/nodes/{{ expected_hostname }}/storage/{{ nas_storage_id }}/content"
+      - --output-format
+      - json
+  changed_when: false
+  register: validation_backups
+
+- name: Assert backups are visible from this node
+  ansible.builtin.assert:
+    that:
+      - (validation_backups.stdout | from_json | length) > 0
+    fail_msg: "No backups are visible on {{ nas_storage_id }} from {{ inventory_hostname }}."
+
+- name: Read every guest on this node
+  ansible.builtin.command:
+    argv: [pvesh, get, "/nodes/{{ expected_hostname }}/qemu", --output-format, json]
+  changed_when: false
+  register: validation_guests
+
+- name: Read the guest configurations for uniqueness checks
+  ansible.builtin.shell: |
+    set -o pipefail
+    for config in /etc/pve/qemu-server/*.conf /etc/pve/lxc/*.conf; do
+      test -f "$config" || continue
+      awk '/^\[/{exit} {print}' "$config"
+    done | grep -ioE '([0-9A-F]{2}:){5}[0-9A-F]{2}' | tr 'a-f' 'A-F' | sort || true
+  args:
+    executable: /bin/bash
+  changed_when: false
+  register: validation_macs
+
+- name: Assert MAC addresses are unique on this node
+  ansible.builtin.assert:
+    that:
+      - (validation_macs.stdout_lines | length) == (validation_macs.stdout_lines | unique | length)
+    fail_msg: >-
+      Duplicate MAC addresses on {{ inventory_hostname }}:
+      {{ validation_macs.stdout_lines | community.general.counter | dict2items | selectattr('value', '>', 1) | map(attribute='key') | list }}
+
+- name: Assert the required bridges exist
+  ansible.builtin.command:
+    argv: [ip, -br, link, show, "{{ item }}"]
+  changed_when: false
+  loop: "{{ validation_required_bridges }}"
+  loop_control:
+    label: "{{ item }}"
+
+- name: Check DNS resolution and gateway reachability
+  ansible.builtin.command:
+    argv: [getent, hosts, "{{ validation_dns_probe }}"]
+  changed_when: false
+  failed_when: false
+  register: validation_dns
+
+- name: Report DNS status
+  ansible.builtin.debug:
+    msg: >-
+      DNS on {{ inventory_hostname }}: {{ 'OK' if validation_dns.rc == 0 else 'FAILED — check /etc/resolv.conf' }}
+
+- name: Read the default gateway
+  ansible.builtin.command:
+    argv: [ip, route, show, default]
+  changed_when: false
+  register: validation_gateway
+
+- name: Ping the default gateway
+  ansible.builtin.command:
+    argv: [ping, -c, "2", -W, "2", "{{ validation_gateway.stdout.split()[2] }}"]
+  changed_when: false
+  failed_when: false
+  register: validation_gateway_ping
+  when: validation_gateway.stdout | length > 0
+
+- name: Assert the gateway responds
+  ansible.builtin.assert:
+    that:
+      - validation_gateway_ping.rc == 0
+    fail_msg: "Default gateway {{ validation_gateway.stdout.split()[2] }} does not respond from {{ inventory_hostname }}."
+  when: validation_gateway.stdout | length > 0
+
+- name: Probe the guest agent of every running guest
+  ansible.builtin.command:
+    argv: [qm, agent, "{{ item.vmid }}", ping]
+  changed_when: false
+  failed_when: false
+  register: validation_agents
+  loop: "{{ validation_guests.stdout | from_json | selectattr('status', 'equalto', 'running') | list }}"
+  loop_control:
+    label: "{{ item.vmid }} {{ item.name | default('') }}"
+  when: validation_probe_guest_agents | bool
+
+- name: Report guest agent responsiveness
+  ansible.builtin.debug:
+    msg: >-
+      guest-agent {{ item.item.vmid }} ({{ item.item.name | default('') }}):
+      {{ 'responding' if item.rc == 0 else 'NOT responding — agent not installed or not running' }}
+  loop: "{{ validation_agents.results | default([]) }}"
+  loop_control:
+    label: "{{ item.item.vmid }}"
+  when: validation_agents.results is defined
+
+- name: Probe application ports declared for this environment
+  ansible.builtin.wait_for:
+    host: "{{ item.host }}"
+    port: "{{ item.port }}"
+    timeout: 5
+    state: started
+  loop: "{{ validation_application_ports }}"
+  loop_control:
+    label: "{{ item.name }} {{ item.host }}:{{ item.port }}"
+  failed_when: false
+  register: validation_ports
+  when: validation_probe_application_ports | bool
+
+- name: Check nested virtualisation is still available for EVE-NG
+  ansible.builtin.shell: |
+    set -o pipefail
+    cat /sys/module/kvm_intel/parameters/nested 2>/dev/null \
+      || cat /sys/module/kvm_amd/parameters/nested 2>/dev/null \
+      || echo "unavailable"
+  args:
+    executable: /bin/bash
+  changed_when: false
+  register: validation_nested
+
+- name: Report nested virtualisation state
+  ansible.builtin.debug:
+    msg: >-
+      nested virtualisation on {{ inventory_hostname }}: {{ validation_nested.stdout | trim }}
+      (EVE-NG on VMID 290 requires this to be Y/1 on the node that hosts it)
+
+- name: Assert nested virtualisation is enabled where EVE-NG lives
+  ansible.builtin.assert:
+    that:
+      - validation_nested.stdout | trim in ['Y', '1', 'y']
+    fail_msg: >-
+      EVE-NG (VMID 290) is registered on {{ inventory_hostname }} but nested
+      virtualisation reports '{{ validation_nested.stdout | trim }}'. Its labs will not boot.
+  when: 290 in (validation_guests.stdout | from_json | map(attribute='vmid') | map('int') | list)
+
+- name: Check for scheduled backup jobs
+  ansible.builtin.command:
+    argv: [pvesh, get, /cluster/backup, --output-format, json]
+  changed_when: false
+  failed_when: false
+  register: validation_backup_jobs
+
+- name: Report the future backup schedule
+  ansible.builtin.debug:
+    msg: >-
+      Scheduled backup jobs: {{ (validation_backup_jobs.stdout | default('[]') | from_json) | length }}.
+      {{ 'Configure one before calling this migration finished.'
+         if (validation_backup_jobs.stdout | default('[]') | from_json) | length == 0
+         else '' }}

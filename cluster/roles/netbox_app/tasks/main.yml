@@ -1,0 +1,125 @@
+---
+- name: Require explicit NetBox deployment approval
+  ansible.builtin.assert:
+    that:
+      - netbox_app_allow_first_deployment | bool
+      - >-
+        netbox_app_first_deployment_confirmation ==
+        netbox_app_first_deployment_confirmation_expected
+    fail_msg: >-
+      NetBox deployment is blocked. Provide the boolean approval and the exact
+      confirmation string documented in docs/netbox-plan.md.
+
+- name: Check Docker Compose availability
+  ansible.builtin.command:
+    argv: [docker, compose, version]
+  changed_when: false
+
+- name: Check required runtime secret files
+  ansible.builtin.stat:
+    path: "{{ netbox_app_secrets_root }}/{{ item }}"
+  loop: "{{ netbox_app_required_secrets }}"
+  register: netbox_app_secret_stats
+  no_log: true
+
+- name: Require protected runtime secret files
+  ansible.builtin.assert:
+    that:
+      - item.stat.exists
+      - item.stat.isreg
+      - item.stat.mode in ['0400', '0600']
+      - item.stat.size | int > 0
+    fail_msg: >-
+      A required root-owned NetBox runtime secret is absent, empty, or not mode
+      0400/0600. Install it on the guest before deploying.
+  loop: "{{ netbox_app_secret_stats.results }}"
+  no_log: true
+
+- name: Create NetBox Compose directory
+  ansible.builtin.file:
+    path: "{{ netbox_app_compose_root }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Create NetBox persistent state directories
+  ansible.builtin.file:
+    path: "{{ netbox_app_state_root }}/{{ item.path }}"
+    state: directory
+    owner: "{{ item.owner }}"
+    group: "{{ item.group }}"
+    mode: "0750"
+  loop: "{{ netbox_app_state_directories }}"
+  loop_control:
+    label: "{{ item.path }}"
+
+- name: Render pinned NetBox Compose definition
+  ansible.builtin.template:
+    src: "{{ netbox_app_assets_root }}/compose.yaml.j2"
+    dest: "{{ netbox_app_compose_root }}/compose.yaml"
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Admit the reverse proxy to the NetBox application port
+  community.general.ufw:
+    rule: allow
+    port: "8000"
+    proto: tcp
+    src: "{{ netbox_app_proxy_source }}"
+    comment: Nginx Proxy Manager on VM 300
+
+- name: Validate the rendered Compose model
+  ansible.builtin.command:
+    argv:
+      - docker
+      - compose
+      - --project-directory
+      - "{{ netbox_app_compose_root }}"
+      - config
+      - --quiet
+  changed_when: false
+
+- name: Deploy the NetBox application
+  ansible.builtin.command:
+    argv:
+      - docker
+      - compose
+      - --project-directory
+      - "{{ netbox_app_compose_root }}"
+      - up
+      - --detach
+      - --pull
+      - always
+  register: netbox_app_deploy
+  changed_when: >-
+    'Created' in (netbox_app_deploy.stdout ~ netbox_app_deploy.stderr)
+    or 'Recreated' in (netbox_app_deploy.stdout ~ netbox_app_deploy.stderr)
+    or 'Started' in (netbox_app_deploy.stdout ~ netbox_app_deploy.stderr)
+
+- name: Read NetBox container state
+  ansible.builtin.command:
+    argv: [docker, inspect, "--format", "{{ '{{.Name}} {{.State.Status}} {{.RestartCount}}' }}", "{{ item }}"]
+  loop: "{{ netbox_app_expected_containers }}"
+  register: netbox_app_container_state
+  changed_when: false
+
+- name: Require every NetBox container running and not restart-looping
+  ansible.builtin.assert:
+    that:
+      - "'running' in item.stdout"
+      - item.stdout.split()[-1] | int < 3
+    fail_msg: "A NetBox container is not running, or is restart-looping."
+  loop: "{{ netbox_app_container_state.results }}"
+  loop_control:
+    label: "{{ item.item }}"
+
+- name: Query the NetBox login page through the published port
+  ansible.builtin.uri:
+    url: "http://{{ netbox_app_bind_address }}:8000/login/"
+    status_code: 200
+  register: netbox_app_login
+  retries: 20
+  delay: 15
+  until: netbox_app_login.status == 200

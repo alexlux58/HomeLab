@@ -1,0 +1,31 @@
+---
+groups:
+  - name: containers
+    rules:
+      - alert: ContainerMissing
+        expr: time() - container_last_seen{name!=""} > 180
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Container disappeared on {{ $labels.instance }}"
+          description: "cAdvisor has not seen {{ $labels.name }} for more than three minutes."
+
+      - alert: ContainerMemoryNearLimit
+        expr: >-
+          (container_memory_working_set_bytes{name!=""} / container_spec_memory_limit_bytes{name!=""} > 0.90)
+          and on (instance, name) (container_spec_memory_limit_bytes{name!=""} > 0)
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Container memory near limit"
+          description: "{{ $labels.name }} is above 90% of its configured memory limit."
+
+      - alert: ContainerRestarting
+        expr: changes(container_start_time_seconds{name!=""}[15m]) > 2
+        labels:
+          severity: warning
+        annotations:
+          summary: "Container is repeatedly restarting"
+          description: "{{ $labels.name }} restarted more than twice in 15 minutes."

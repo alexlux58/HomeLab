@@ -1,0 +1,11 @@
+[Unit]
+Description=Run the application-aware homelab backup at 02:45 daily
+
+[Timer]
+OnCalendar=*-*-* 02:45:00
+Persistent=true
+AccuracySec=1min
+Unit=homelab-app-backup.service
+
+[Install]
+WantedBy=timers.target

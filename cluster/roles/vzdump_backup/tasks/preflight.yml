@@ -1,0 +1,208 @@
+---
+- name: Re-read the current guest inventory
+  ansible.builtin.command:
+    argv: [pvesh, get, "/nodes/{{ expected_hostname }}/qemu", --output-format, json]
+  changed_when: false
+  register: vzdump_backup_qemu_list
+
+- name: Re-read the current container inventory
+  ansible.builtin.command:
+    argv: [pvesh, get, "/nodes/{{ expected_hostname }}/lxc", --output-format, json]
+  changed_when: false
+  failed_when: false
+  register: vzdump_backup_lxc_list
+
+- name: Build the live guest state map
+  ansible.builtin.set_fact:
+    vzdump_backup_live_guests: >-
+      {{ (vzdump_backup_qemu_list.stdout | from_json)
+         + (vzdump_backup_lxc_list.stdout | default('[]') | from_json) }}
+
+- name: Assert every protected guest still exists on the host
+  ansible.builtin.assert:
+    that:
+      - item.vmid | int in (vzdump_backup_live_guests | map(attribute='vmid') | map('int') | list)
+    fail_msg: "Protected guest {{ item.vmid }} ({{ item.name }}) is not present on {{ inventory_hostname }}."
+  loop: "{{ vzdump_backup_targets }}"
+  loop_control:
+    label: "{{ item.vmid }}"
+
+- name: Read each protected guest's configuration
+  ansible.builtin.slurp:
+    src: "/etc/pve/qemu-server/{{ item.vmid }}.conf"
+  register: vzdump_backup_configs
+  loop: "{{ vzdump_backup_targets | selectattr('type', 'equalto', 'qemu') | list }}"
+  loop_control:
+    label: "{{ item.vmid }}"
+
+- name: Find disks that vzdump would silently skip
+  ansible.builtin.set_fact:
+    vzdump_backup_excluded_disks: >-
+      {{ vzdump_backup_configs.results
+         | map(attribute='content') | map('b64decode')
+         | zip(vzdump_backup_targets | selectattr('type', 'equalto', 'qemu') | list)
+         | selectattr(0, 'search', 'backup=0')
+         | map(attribute=1) | list }}
+
+- name: Abort if any attached disk has backup disabled
+  ansible.builtin.assert:
+    that:
+      - vzdump_backup_excluded_disks | length == 0
+    fail_msg: |
+      These guests have at least one disk with backup=0, so their archive would be
+      incomplete and restoring it would silently lose data:
+      {{ vzdump_backup_excluded_disks | map(attribute='vmid') | zip(vzdump_backup_excluded_disks | map(attribute='name')) | list }}
+
+      Either enable the backup flag on those disks, or record an approved
+      alternative protection method and re-run with:
+        -e vzdump_accept_excluded_disks=true
+  when: not (vzdump_accept_excluded_disks | default(false) | bool)
+
+- name: Look for LXC bind mounts, which vzdump never includes
+  ansible.builtin.shell: |
+    set -o pipefail
+    grep -lE '^(mp[0-9]+|dev[0-9]+):\s*/' /etc/pve/lxc/*.conf 2>/dev/null || true
+  args:
+    executable: /bin/bash
+  changed_when: false
+  register: vzdump_backup_bind_mounts
+
+- name: Abort if an LXC bind mount has no approved protection method
+  ansible.builtin.assert:
+    that:
+      - vzdump_backup_bind_mounts.stdout | trim | length == 0
+    fail_msg: |
+      These container configs use bind/device mounts, whose contents are NEVER in
+      a vzdump archive:
+      {{ vzdump_backup_bind_mounts.stdout_lines }}
+      Copy that data separately and re-run with:
+        -e vzdump_bind_mounts_protected=true
+  when: not (vzdump_bind_mounts_protected | default(false) | bool)
+
+- name: Confirm the host configuration capture ran before this backup
+  ansible.builtin.stat:
+    path: "{{ host_configs_dir }}/{{ expected_hostname }}/latest"
+  delegate_to: localhost
+  become: false
+  register: vzdump_backup_config_capture
+
+- name: Require the host configuration and snippets to be captured first
+  ansible.builtin.assert:
+    that:
+      - vzdump_backup_config_capture.stat.exists
+    fail_msg: |
+      No captured host configuration found at
+      {{ host_configs_dir }}/{{ expected_hostname }}/latest.
+      Snippets, hook scripts and bridge configuration are not inside a vzdump
+      archive. Run `make capture-config` first.
+
+- name: Confirm passthrough usage has been documented in discovery
+  ansible.builtin.stat:
+    path: "{{ artifacts_dir }}/discovery.json"
+  delegate_to: localhost
+  become: false
+  register: vzdump_backup_discovery_stat
+
+- name: Require discovery to have been run
+  ansible.builtin.assert:
+    that:
+      - vzdump_backup_discovery_stat.stat.exists
+    fail_msg: "artifacts/discovery.json is missing. Run `make discover` before backing up."
+
+- name: Verify the backup storage is present and active
+  ansible.builtin.command:
+    argv: [pvesm, status, --storage, "{{ vzdump_backup_storage }}"]
+  changed_when: false
+  register: vzdump_backup_storage_status
+
+- name: Assert the backup storage is usable
+  ansible.builtin.assert:
+    that:
+      - "'active' in vzdump_backup_storage_status.stdout"
+    fail_msg: "Backup storage {{ vzdump_backup_storage }} is not active: {{ vzdump_backup_storage_status.stdout }}"
+
+- name: Verify the backup storage really is the NAS
+  ansible.builtin.command:
+    argv: [findmnt, -n, -o, "SOURCE,FSTYPE", "/mnt/pve/{{ vzdump_backup_storage }}"]
+  changed_when: false
+  register: vzdump_backup_storage_mount
+
+- name: Assert we are not about to fill the local root filesystem
+  ansible.builtin.assert:
+    that:
+      - vzdump_backup_storage_mount.stdout.startswith(nas_ip ~ ':')
+      - nas_required_volume_prefix in vzdump_backup_storage_mount.stdout
+    fail_msg: >-
+      /mnt/pve/{{ vzdump_backup_storage }} is not an NFS mount from {{ nas_ip }}
+      ({{ vzdump_backup_storage_mount.stdout }}). Refusing to write backups.
+
+- name: Measure the space the protected guests occupy and the space available
+  ansible.builtin.shell: |
+    set -o pipefail
+    set -eu
+    avail=$(df -B1 --output=avail /mnt/pve/{{ vzdump_backup_storage }} | tail -1 | tr -d ' ')
+    need=0
+    for vmid in {{ vzdump_backup_targets | map(attribute='vmid') | join(' ') }}; do
+      size=$(qm config "$vmid" 2>/dev/null \
+             | grep -oE 'size=[0-9]+[KMGT]?' | sed 's/size=//' \
+             | awk '{ n=$0; u=substr(n,length(n)); v=substr(n,1,length(n)-1);
+                      m=1; if(u=="K")m=1024; else if(u=="M")m=1048576;
+                      else if(u=="G")m=1073741824; else if(u=="T")m=1099511627776;
+                      else {v=n; m=1}
+                      printf "%d\n", v*m }' \
+             | paste -sd+ - | bc)
+      need=$((need + ${size:-0}))
+    done
+    printf '{"avail_bytes":%s,"needed_bytes":%s}\n' "$avail" "$need"
+  args:
+    executable: /bin/bash
+  changed_when: false
+  register: vzdump_backup_capacity
+
+- name: Parse the capacity figures
+  ansible.builtin.set_fact:
+    vzdump_backup_capacity_info: "{{ vzdump_backup_capacity.stdout | from_json }}"
+
+- name: Assert the NAS has enough free space for this generation plus headroom
+  ansible.builtin.assert:
+    that:
+      - (vzdump_backup_capacity_info.avail_bytes | int)
+        > (vzdump_backup_capacity_info.needed_bytes | int) * (vzdump_backup_min_free_multiplier | float)
+    fail_msg: >-
+      Not enough space on {{ vzdump_backup_storage }}:
+      need ~{{ (vzdump_backup_capacity_info.needed_bytes | int / 1024**3) | round(1) }} GiB
+      x {{ vzdump_backup_min_free_multiplier }} safety multiplier, but only
+      {{ (vzdump_backup_capacity_info.avail_bytes | int / 1024**3) | round(1) }} GiB is free.
+    success_msg: >-
+      {{ (vzdump_backup_capacity_info.avail_bytes | int / 1024**3) | round(1) }} GiB free for an estimated
+      {{ (vzdump_backup_capacity_info.needed_bytes | int / 1024**3) | round(1) }} GiB of guest data.
+
+- name: Look for conflicting backup or migration tasks already running
+  ansible.builtin.command:
+    argv: [pvesh, get, "/nodes/{{ expected_hostname }}/tasks", --limit, "50", --output-format, json]
+  changed_when: false
+  register: vzdump_backup_tasks
+
+- name: Assert no conflicting task is in flight
+  ansible.builtin.assert:
+    that:
+      - vzdump_backup_tasks.stdout | from_json
+        | rejectattr('endtime', 'defined')
+        | selectattr('type', 'match', '(vzdump|qmigrate|qmrestore|imgcopy|aptupdate|apt)')
+        | list | length == 0
+    fail_msg: |
+      A conflicting task is already running on {{ inventory_hostname }}:
+      {{ vzdump_backup_tasks.stdout | from_json | rejectattr('endtime', 'defined') | list }}
+      Wait for it to finish rather than running two of them at once.
+  when: vzdump_backup_require_no_active_tasks | bool
+
+- name: Report application-consistency concerns for this host
+  ansible.builtin.debug:
+    msg: >-
+      APPLICATION CONSISTENCY: VMID {{ item.vmid }} ({{ item.name }}) —
+      {{ item.reason }}
+      A '{{ vzdump_backup_mode }}'-mode vzdump captures a crash-consistent image only.
+  loop: "{{ application_consistency_warn_guests }}"
+  loop_control:
+    label: "{{ item.vmid }}"
+  when: item.vmid | int in (vzdump_backup_targets | map(attribute='vmid') | map('int') | list)

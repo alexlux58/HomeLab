@@ -1,0 +1,12 @@
+---
+- name: Run one application-aware observability backup
+  hosts: observability_servers
+  become: true
+  gather_facts: false
+  serial: 1
+  any_errors_fatal: true
+  tasks:
+    - name: Start backup service
+      ansible.builtin.systemd_service:
+        name: homelab-observability-backup.service
+        state: started

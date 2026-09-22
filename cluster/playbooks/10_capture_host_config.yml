@@ -1,0 +1,25 @@
+---
+# Stage 2 — capture the host configuration that vzdump does NOT contain.
+#
+#   make capture-config
+#
+# Runs on .11 and .12 only. Secrets are excluded and the capture is scanned to
+# prove none slipped through.
+- name: Capture sanitized host configuration
+  hosts: preserve
+  gather_facts: true
+  serial: 1
+  any_errors_fatal: true
+  tags: [stage2, capture]
+
+  pre_tasks:
+    - name: Ensure the per-host configuration directory exists
+      ansible.builtin.file:
+        path: "{{ host_configs_dir }}/{{ expected_hostname }}"
+        state: directory
+        mode: "0700"
+      delegate_to: localhost
+      become: false
+
+  roles:
+    - role: host_config_backup

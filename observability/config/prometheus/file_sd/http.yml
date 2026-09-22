@@ -1,0 +1,14 @@
+---
+# Hostnames must match NPM proxy_host server_name values on VM 300.
+# homepage.lab / uptime.lab are wrong names that resolve via wildcard DNS but
+# fail TLS SNI (tlsv1 unrecognized name) and page as EndpointDown forever.
+- targets:
+    - https://home.lab.example.com/
+    - https://tools.lab.example.com/
+    - https://netknife.lab.example.com/
+    - https://links.lab.example.com/
+    - https://drop.lab.example.com/
+    - https://status.lab.example.com/
+    - https://speed.lab.example.com/
+  labels:
+    tier: homelab-services

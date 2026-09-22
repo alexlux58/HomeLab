@@ -1,0 +1,65 @@
+---
+# Stage 0a — prove the EXISTING key-based access works.
+#
+#   make validate-ssh
+#
+# Read-only. Generates no keys, installs no keys, stores no passwords.
+- name: Validate SSH key access and host identity
+  hosts: proxmox
+  gather_facts: false
+  serial: 1
+  any_errors_fatal: true
+  tags: [stage0, readonly, ssh]
+
+  pre_tasks:
+    - name: Verify the private key exists on the controller
+      ansible.builtin.stat:
+        path: "{{ ssh_private_key_file | expanduser }}"
+      delegate_to: localhost
+      become: false
+      run_once: true
+      register: ssh_key_stat
+
+    - name: Assert the configured private key is present
+      ansible.builtin.assert:
+        that:
+          - ssh_key_stat.stat.exists
+        fail_msg: |
+          The configured SSH key {{ ssh_private_key_file }} does not exist.
+          This project never generates keys. If your key has a different name,
+          change `ssh_key_name` in inventory/group_vars/all.yml — it is the only
+          place the filename appears.
+      delegate_to: localhost
+      become: false
+      run_once: true
+
+    - name: Assert the private key is not world-readable
+      ansible.builtin.assert:
+        that:
+          - ssh_key_stat.stat.mode in ['0600', '0400']
+        fail_msg: >-
+          {{ ssh_private_key_file }} has mode {{ ssh_key_stat.stat.mode }}.
+          OpenSSH will refuse it. Run: chmod 600 {{ ssh_private_key_file }}
+      delegate_to: localhost
+      become: false
+      run_once: true
+
+    - name: Assert no password variable has been supplied anywhere
+      ansible.builtin.assert:
+        that:
+          - ansible_password is not defined
+          - ansible_ssh_pass is not defined
+          - ansible_become_password is not defined
+        fail_msg: >-
+          A password variable was supplied. This project authenticates with keys
+          only and must never handle a root password.
+
+  roles:
+    - role: ssh_validation
+
+  post_tasks:
+    - name: Summarise
+      ansible.builtin.debug:
+        msg:
+          - "{{ inventory_hostname }} ({{ ansible_host }}) — key auth OK, identity verified."
+          - "Equivalent manual check: ssh {{ ssh_alias }} 'hostname; pveversion'"

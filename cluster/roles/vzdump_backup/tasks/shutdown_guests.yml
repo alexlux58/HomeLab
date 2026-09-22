@@ -1,0 +1,93 @@
+---
+# Stage 4 only. Records the power state FIRST so the migration can put every
+# guest back exactly as it found it if the operator decides to pause.
+
+- name: Require explicit approval before shutting guests down
+  ansible.builtin.assert:
+    that:
+      - allow_guest_shutdown | bool
+      - guest_shutdown_confirmation == guest_shutdown_confirmation_required
+    fail_msg: |
+      Refusing to shut down running guests on {{ inventory_hostname }}.
+      Re-run with BOTH of:
+        -e allow_guest_shutdown=true
+        -e guest_shutdown_confirmation='{{ guest_shutdown_confirmation_required }}'
+
+- name: Require the destructive opt-in tag as well as the approval variables
+  ansible.builtin.assert:
+    that:
+      - "'destructive' in ansible_run_tags or 'never' in ansible_run_tags"
+    fail_msg: |
+      The approval variables are set, but the destructive tasks in this play are
+      tagged `never,destructive` and were therefore not requested.
+
+      Re-run the same command with the explicit opt-in:
+        --tags all,destructive
+      (the Makefile targets for destructive stages already pass this).
+    success_msg: "Destructive opt-in present (--tags all,destructive)."
+
+- name: Record the current power state of every protected guest
+  ansible.builtin.command:
+    argv: [qm, status, "{{ item.vmid }}"]
+  changed_when: false
+  register: vzdump_backup_power_states
+  loop: "{{ vzdump_backup_targets }}"
+  loop_control:
+    label: "{{ item.vmid }}"
+
+- name: Build the power-state map
+  ansible.builtin.set_fact:
+    vzdump_backup_original_states: >-
+      {{ dict(vzdump_backup_targets | map(attribute='vmid')
+              | zip(vzdump_backup_power_states.results | map(attribute='stdout')
+              | map('regex_replace', '^status:\s*', '') | map('trim'))) }}
+
+- name: Save the power-state map to the controller for rollback
+  ansible.builtin.copy:
+    content: "{{ {'host': inventory_hostname, 'recorded_at': ansible_date_time.iso8601, 'states': vzdump_backup_original_states} | to_nice_json }}\n"
+    dest: "{{ artifacts_dir }}/power-state-{{ expected_hostname }}.json"
+    mode: "0644"
+  delegate_to: localhost
+  become: false
+
+- name: Show what will be shut down
+  ansible.builtin.debug:
+    msg:
+      - "PROPOSED CHANGE on {{ inventory_hostname }}: graceful shutdown before the final backup"
+      - "{{ vzdump_backup_original_states }}"
+      - "Recorded to artifacts/power-state-{{ expected_hostname }}.json for rollback."
+
+- name: Request a graceful ACPI/agent shutdown of every running guest
+  ansible.builtin.command:
+    argv: [qm, shutdown, "{{ item.key }}", --timeout, "{{ guest_shutdown_timeout_seconds }}", --forceStop, "0"]
+  changed_when: true
+  loop: "{{ vzdump_backup_original_states | dict2items }}"
+  loop_control:
+    label: "{{ item.key }} ({{ item.value }})"
+  when: item.value == 'running'
+  register: vzdump_backup_shutdown_results
+  tags: [never, destructive]
+
+- name: Wait until each guest reports stopped
+  ansible.builtin.command:
+    argv: [qm, status, "{{ item.key }}"]
+  changed_when: false
+  register: vzdump_backup_stopped_check
+  until: "'status: stopped' in vzdump_backup_stopped_check.stdout"
+  retries: "{{ (guest_shutdown_timeout_seconds | int / guest_shutdown_poll_seconds | int) | int }}"
+  delay: "{{ guest_shutdown_poll_seconds }}"
+  loop: "{{ vzdump_backup_original_states | dict2items }}"
+  loop_control:
+    label: "{{ item.key }}"
+
+- name: Assert every protected guest is now stopped
+  ansible.builtin.assert:
+    that:
+      - "'status: stopped' in item.stdout"
+    fail_msg: >-
+      Guest {{ item.item.key }} did not stop within
+      {{ guest_shutdown_timeout_seconds }}s. Investigate rather than forcing it:
+      a forced stop makes the "clean" backup no cleaner than a snapshot.
+  loop: "{{ vzdump_backup_stopped_check.results }}"
+  loop_control:
+    label: "{{ item.item.key }}"

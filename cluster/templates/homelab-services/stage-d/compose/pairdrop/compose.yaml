@@ -1,0 +1,36 @@
+---
+name: homelab-pairdrop
+
+services:
+  pairdrop:
+    image: ghcr.io/schlagmichdoch/pairdrop:v1.11.2@sha256:39fdf4aa90c577f6ddb236493cb43774b80f7198934d2f6e46be25b91f92025d
+    container_name: pairdrop
+    restart: unless-stopped
+    user: "1000:1000"
+    environment:
+      NODE_ENV: production
+      WS_FALLBACK: "false"
+    expose:
+      - "3000"
+    networks:
+      homelab_proxy:
+        aliases:
+          - pairdrop
+    read_only: true
+    tmpfs:
+      - /tmp:size=32m,mode=1777
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    mem_limit: 256m
+    mem_reservation: 64m
+    cpus: 0.75
+    pids_limit: 192
+    labels:
+      com.examplelab.homelab.role: local-file-transfer
+      com.examplelab.homelab.state: none
+
+networks:
+  homelab_proxy:
+    external: true

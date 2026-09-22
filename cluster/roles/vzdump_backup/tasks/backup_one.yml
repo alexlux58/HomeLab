@@ -1,0 +1,88 @@
+---
+# One guest, one archive. Runs asynchronously so a multi-hour backup survives
+# an SSH hiccup, and polls until it finishes.
+
+- name: "Record the pre-backup state of {{ guest.vmid }}"
+  ansible.builtin.command:
+    argv: ["{{ 'qm' if guest.type == 'qemu' else 'pct' }}", status, "{{ guest.vmid }}"]
+  changed_when: false
+  register: vzdump_backup_one_state
+
+- name: "Start vzdump for guest {{ guest.vmid }}"
+  ansible.builtin.command:
+    argv:
+      - vzdump
+      - "{{ guest.vmid }}"
+      - --storage
+      - "{{ vzdump_backup_storage }}"
+      - --mode
+      - "{{ vzdump_backup_mode }}"
+      - --compress
+      - "{{ vzdump_compress }}"
+      - --zstd
+      - "{{ vzdump_zstd_threads }}"
+      - --bwlimit
+      - "{{ vzdump_bwlimit_kbps }}"
+      - --notes-template
+      - "{{ guest.name }} / {{ expected_hostname }} / generation={{ vzdump_backup_generation }}"
+      - --quiet
+      - "0"
+  changed_when: true
+  async: "{{ vzdump_async_seconds }}"
+  poll: "{{ vzdump_poll_seconds }}"
+  register: vzdump_backup_one_result
+
+- name: "Locate the archive just written for {{ guest.vmid }}"
+  ansible.builtin.shell: |
+    set -o pipefail
+    set -eu
+    kind={{ 'qemu' if guest.type == 'qemu' else 'lxc' }}
+    ext={{ 'vma' if guest.type == 'qemu' else 'tar' }}
+    dump=/mnt/pve/{{ vzdump_backup_storage }}/dump
+    ls -1t "$dump/vzdump-$kind-{{ guest.vmid }}-"*".$ext.zst" | head -1
+  args:
+    executable: /bin/bash
+  changed_when: false
+  register: vzdump_backup_one_archive
+
+- name: "Collect the archive metadata for {{ guest.vmid }}"
+  ansible.builtin.stat:
+    path: "{{ vzdump_backup_one_archive.stdout | trim }}"
+    checksum_algorithm: sha256
+    get_checksum: true
+  register: vzdump_backup_one_stat
+
+- name: "Assert the archive exists and is not empty"
+  ansible.builtin.assert:
+    that:
+      - vzdump_backup_one_stat.stat.exists
+      - vzdump_backup_one_stat.stat.size > 0
+    fail_msg: "vzdump reported success for {{ guest.vmid }} but produced no usable archive."
+
+- name: "Read the guest configuration that was captured with the archive"
+  ansible.builtin.slurp:
+    src: "/etc/pve/{{ 'qemu-server' if guest.type == 'qemu' else 'lxc' }}/{{ guest.vmid }}.conf"
+  register: vzdump_backup_one_config
+
+- name: "Write the per-archive manifest fragment for {{ guest.vmid }}"
+  ansible.builtin.copy:
+    content: "{{ lookup('template', 'manifest-entry.json.j2') }}"
+    dest: "{{ vzdump_backup_manifest_dir }}/{{ vzdump_backup_generation }}-{{ guest.vmid }}.json"
+    owner: root
+    group: root
+    mode: "0600"
+  vars:
+    entry_guest: "{{ guest }}"
+    entry_archive: "{{ vzdump_backup_one_stat.stat }}"
+    entry_state: "{{ vzdump_backup_one_state.stdout | regex_replace('^status:\\s*', '') | trim }}"
+    entry_config: "{{ vzdump_backup_one_config.content | b64decode }}"
+
+- name: "Report the archive for {{ guest.vmid }}"
+  ansible.builtin.debug:
+    msg:
+      - "guest:    {{ guest.vmid }} {{ guest.name }} ({{ guest.type }})"
+      - "mode:     {{ vzdump_backup_mode }}  generation: {{ vzdump_backup_generation }}"
+      - "archive:  {{ vzdump_backup_one_stat.stat.path }}"
+      - "size:     {{ (vzdump_backup_one_stat.stat.size / 1024**3) | round(2) }} GiB"
+      - "sha256:   {{ vzdump_backup_one_stat.stat.checksum }}"
+      - "state at backup time: {{ vzdump_backup_one_state.stdout | trim }}"

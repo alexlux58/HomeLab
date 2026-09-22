@@ -1,0 +1,4 @@
+---
+ssh_validation_require_fingerprint_match: true
+ssh_validation_check_key_permissions: true
+ssh_validation_expected_key_mode: "0600"

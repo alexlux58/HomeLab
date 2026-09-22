@@ -1,0 +1,12 @@
+---
+# Supplied by the calling playbook:
+#   pve_join_allow                  bool   approval flag for this node
+#   pve_join_confirmation           str    the operator-typed confirmation
+#   pve_join_confirmation_required  str    the exact string that must match
+#   pve_join_executed               bool   operator asserts the manual join ran
+pve_join_allow: false
+pve_join_confirmation: ""
+pve_join_confirmation_required: "SET-ME"
+pve_join_executed: false
+pve_join_wait_seconds: 60
+pve_join_require_empty: true

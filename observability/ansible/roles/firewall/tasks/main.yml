@@ -1,0 +1,53 @@
+---
+- name: Set default incoming firewall policy
+  community.general.ufw:
+    direction: incoming
+    policy: deny
+
+- name: Set default outgoing firewall policy
+  community.general.ufw:
+    direction: outgoing
+    policy: allow
+
+- name: Allow SSH only from the LAN
+  community.general.ufw:
+    rule: allow
+    proto: tcp
+    src: "{{ firewall_lan_cidr }}"
+    port: "22"
+    comment: LAN SSH
+
+- name: Allow operator web interfaces from the LAN
+  community.general.ufw:
+    rule: allow
+    proto: tcp
+    src: "{{ firewall_lan_cidr }}"
+    port: "{{ item }}"
+    comment: LAN observability UI
+  loop:
+    - "3000"
+    - "9090"
+    - "9093"
+
+- name: Allow Loki ingestion only from the services VM
+  community.general.ufw:
+    rule: allow
+    proto: tcp
+    src: "{{ firewall_services_ip }}"
+    port: "3100"
+    comment: Alloy log ingestion
+
+- name: Allow LAN syslog forwarding
+  community.general.ufw:
+    rule: allow
+    proto: "{{ item }}"
+    src: "{{ firewall_lan_cidr }}"
+    port: "1514"
+    comment: LAN syslog ingestion
+  loop:
+    - tcp
+    - udp
+
+- name: Enable UFW
+  community.general.ufw:
+    state: enabled

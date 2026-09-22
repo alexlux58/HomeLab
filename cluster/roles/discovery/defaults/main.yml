@@ -1,0 +1,5 @@
+---
+discovery_probe_agent: false      # keep stage 0 completely passive by default
+discovery_task_limit: 50
+discovery_remote_script: /root/.pve-migration/pve_discover.py
+discovery_timeout_seconds: 600

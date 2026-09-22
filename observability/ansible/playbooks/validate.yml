@@ -1,0 +1,159 @@
+---
+- name: Validate central observability runtime
+  hosts: observability_servers
+  become: true
+  gather_facts: false
+  serial: 1
+  any_errors_fatal: true
+  tasks:
+    - name: Wait for container restart-loop detection window
+      ansible.builtin.pause:
+        seconds: 15
+
+    - name: Inspect expected central observability containers
+      community.docker.docker_container_info:
+        name: "homelab-observability-{{ item }}-1"
+      loop: "{{ observability_stack_expected_services }}"
+      loop_control:
+        label: "{{ item }}"
+      register: observability_validate_container_info
+
+    - name: Assert every expected container is stable
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - item.exists
+          - item.container.State.Running
+          - not item.container.State.Restarting
+          - item.container.RestartCount | int == 0
+        fail_msg: "An expected central observability container is absent or restarting."
+      loop: "{{ observability_validate_container_info.results }}"
+      loop_control:
+        label: "{{ item.item }}"
+
+    - name: Collect running Compose services
+      ansible.builtin.command:
+        argv:
+          - docker
+          - compose
+          - --project-directory
+          - /opt/observability/docker
+          - ps
+          - --services
+          - --status
+          - running
+      register: observability_validate_running_services
+      changed_when: false
+
+    - name: Assert every expected Compose service is running
+      ansible.builtin.assert:
+        that:
+          - >-
+            observability_stack_expected_services |
+            difference(observability_validate_running_services.stdout_lines) |
+            length == 0
+          - >-
+            observability_validate_running_services.stdout_lines |
+            difference(observability_stack_expected_services) |
+            length == 0
+        fail_msg: "One or more expected central observability services are not running."
+
+    - name: Query Prometheus readiness
+      ansible.builtin.uri:
+        url: "http://{{ firewall_observability_ip }}:9090/-/ready"
+        return_content: true
+        status_code: 200
+      register: observability_validate_prometheus_ready
+      until: observability_validate_prometheus_ready.status == 200
+      retries: 10
+      delay: 3
+
+    - name: Query Prometheus target health
+      ansible.builtin.uri:
+        url: "http://{{ firewall_observability_ip }}:9090/api/v1/targets"
+        return_content: true
+        status_code: 200
+      register: observability_validate_targets
+      until:
+        - observability_validate_targets.json.status == "success"
+        - >-
+          observability_stack_required_up_jobs |
+          difference(
+            observability_validate_targets.json.data.activeTargets |
+            selectattr('health', 'equalto', 'up') |
+            map(attribute='labels.job') |
+            list
+          ) |
+          length == 0
+      retries: 25
+      delay: 5
+
+    - name: Query Loki readiness
+      ansible.builtin.uri:
+        url: "http://{{ firewall_observability_ip }}:3100/ready"
+        return_content: true
+        status_code: 200
+      register: observability_validate_loki_ready
+      until: observability_validate_loki_ready.status == 200
+      retries: 10
+      delay: 3
+
+    - name: Query Synology RAID payload metrics
+      ansible.builtin.uri:
+        url: >-
+          http://{{ firewall_observability_ip }}:9090/api/v1/query?query=raidStatus%7Bjob%3D%22synology-snmp%22%7D
+        return_content: true
+        status_code: 200
+      register: observability_validate_synology_raid
+
+    - name: Query Synology disk temperature payload metrics
+      ansible.builtin.uri:
+        url: >-
+          http://{{ firewall_observability_ip }}:9090/api/v1/query?query=diskTemperature%7Bjob%3D%22synology-snmp%22%7D
+        return_content: true
+        status_code: 200
+      register: observability_validate_synology_disks
+
+    - name: Assert Synology scrape contains dashboard payload metrics
+      ansible.builtin.assert:
+        that:
+          - observability_validate_synology_raid.json.status == "success"
+          - observability_validate_synology_raid.json.data.result | length > 0
+          - observability_validate_synology_disks.json.status == "success"
+          - observability_validate_synology_disks.json.data.result | length > 0
+        fail_msg: >-
+          The Synology target is reachable but required RAID or disk metrics are
+          absent. Regenerate snmp.yml from the version-matched generator input.
+
+    - name: Query Grafana health
+      ansible.builtin.uri:
+        url: "http://{{ firewall_observability_ip }}:3000/api/health"
+        return_content: true
+        status_code: 200
+      register: observability_validate_grafana_ready
+      until: observability_validate_grafana_ready.status == 200
+      retries: 10
+      delay: 3
+
+    - name: Query Alertmanager readiness
+      ansible.builtin.uri:
+        url: "http://{{ firewall_observability_ip }}:9093/-/ready"
+        return_content: true
+        status_code: 200
+      register: observability_validate_alertmanager_ready
+      until: observability_validate_alertmanager_ready.status == 200
+      retries: 10
+      delay: 3
+
+    - name: Validate expected dashboards exist on disk
+      ansible.builtin.find:
+        paths: /opt/observability/config/grafana/dashboards
+        patterns: "*.json"
+      register: observability_validate_dashboards
+
+    - name: Assert runtime validation gates
+      ansible.builtin.assert:
+        that:
+          - observability_validate_dashboards.matched | int >= 8
+          - observability_validate_targets.json.status == "success"
+        fail_msg: "Central observability runtime validation failed."

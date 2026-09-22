@@ -1,0 +1,41 @@
+---
+# Default path. `pvecm add` authenticates against the seed and prompts for the
+# seed's root password. This project never asks for, stores or transmits a
+# password, so the one command that needs it is executed by a human.
+
+- name: Print the exact command the operator must run
+  ansible.builtin.debug:
+    msg: |
+
+      ===================================================================
+      MANUAL STEP — run this yourself, once, on {{ inventory_hostname }}
+      ===================================================================
+
+      Open a session to the joining node (its own console, or SSH):
+
+          ssh {{ ssh_alias }}
+
+      Then run:
+
+          pvecm add {{ cluster_seed_ip }} --link0 {{ ansible_host }}
+
+      You will be prompted for the ROOT PASSWORD OF THE SEED NODE
+      ({{ cluster_seed_host }} / {{ cluster_seed_ip }}). That password is yours
+      and is never handled by this automation.
+
+      Expected output ends with:
+          successfully added node '{{ expected_hostname }}' to cluster.
+
+      Afterwards, Proxmox regenerates the node's X.509 certificate. Its SSH host
+      key normally remains unchanged; if SSH nevertheless reports a mismatch,
+      stop and verify the new fingerprint at the node console before updating
+      expected_host_fingerprint for {{ inventory_hostname }}.
+
+      When the join has completed, re-run this playbook with:
+          -e {{ pve_join_executed_var | default('join_executed') }}=true
+      to run the post-join validation.
+      ===================================================================
+
+- name: Stop here until the operator confirms the manual join has run
+  ansible.builtin.meta: end_host
+  when: not (pve_join_executed | bool)

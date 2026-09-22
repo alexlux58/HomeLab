@@ -1,0 +1,39 @@
+---
+- name: Create Alloy agent deployment directory
+  ansible.builtin.file:
+    path: /opt/exporters/alloy
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Create persistent Alloy agent state directory
+  ansible.builtin.file:
+    path: /var/lib/alloy
+    state: directory
+    owner: "473"
+    group: "473"
+    mode: "0750"
+
+- name: Install Alloy agent configuration
+  ansible.builtin.copy:
+    src: "{{ playbook_dir }}/../../config/alloy/agent.alloy"
+    dest: /opt/exporters/alloy/config.alloy
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Install Alloy agent Compose model
+  ansible.builtin.template:
+    src: compose.yml.j2
+    dest: /opt/exporters/alloy/compose.yml
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Deploy Alloy agent
+  community.docker.docker_compose_v2:
+    project_src: /opt/exporters/alloy
+    state: present
+    wait: true
+    wait_timeout: 120

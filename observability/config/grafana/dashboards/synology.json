@@ -1,0 +1,217 @@
+{
+  "annotations": {"list": []}, "description": "the NAS health over read-only SNMPv3. Two cautions specific to this NAS: the exporter returns diskID hex-encoded, so panels label disks as 0x4469736B2032 rather than 'Disk 2', and Volume 1 - which holds every backup archive - is a single-disk array with no redundancy. Trust SMART over the SNMP health field: SNMP reported Disk 3 healthy while smartctl reported FAILING_NOW.",
+  "editable": false,
+  "graphTooltip": 1,
+  "links": [
+    {"targetBlank": true, "title": "Open Synology DSM", "type": "link", "url": "https://192.168.0.20:5001"}
+  ],
+  "panels": [
+    {
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "description": "Prometheus can successfully collect the Synology SNMPv3 target.",
+      "fieldConfig": {"defaults": {"mappings": [{"options": {"0": {"color": "red", "index": 0, "text": "DOWN"}, "1": {"color": "green", "index": 1, "text": "UP"}}, "type": "value"}], "thresholds": {"mode": "absolute", "steps": [{"color": "red", "value": null}, {"color": "green", "value": 1}]}}, "overrides": []},
+      "gridPos": {"h": 4, "w": 4, "x": 0, "y": 0},
+      "id": 1,
+      "options": {"colorMode": "background", "graphMode": "area", "justifyMode": "auto", "orientation": "auto", "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}, "textMode": "auto", "wideLayout": true},
+      "targets": [{"expr": "up{job=\"synology-snmp\"}", "legendFormat": "SNMP", "refId": "A"}],
+      "title": "SNMP target",
+      "type": "stat"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "description": "Worst value across DSM system, power, and fan status sensors. Synology reports 1 as normal.",
+      "fieldConfig": {"defaults": {"mappings": [{"options": {"1": {"color": "green", "index": 0, "text": "Healthy"}}, "type": "value"}, {"options": {"from": 1.000001, "result": {"color": "red", "index": 1, "text": "Attention"}, "to": 100}, "type": "range"}], "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}, {"color": "red", "value": 1.000001}]}}, "overrides": []},
+      "gridPos": {"h": 4, "w": 4, "x": 4, "y": 0},
+      "id": 2,
+      "options": {"colorMode": "background", "graphMode": "none", "justifyMode": "auto", "orientation": "auto", "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}, "textMode": "auto", "wideLayout": true},
+      "targets": [{"expr": "max({job=\"synology-snmp\",__name__=~\"systemStatus|powerStatus|systemFanStatus|cpuFanStatus\"})", "legendFormat": "System", "refId": "A"}],
+      "title": "System health",
+      "type": "stat"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "description": "DSM update state reported by the Synology MIB.",
+      "fieldConfig": {"defaults": {"mappings": [{"options": {"1": {"color": "yellow", "index": 0, "text": "Available"}, "2": {"color": "green", "index": 1, "text": "Current"}, "3": {"color": "blue", "index": 2, "text": "Checking"}, "4": {"color": "red", "index": 3, "text": "Offline"}, "5": {"color": "orange", "index": 4, "text": "Unknown"}}, "type": "value"}], "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}]}}, "overrides": []},
+      "gridPos": {"h": 4, "w": 4, "x": 8, "y": 0},
+      "id": 3,
+      "options": {"colorMode": "background", "graphMode": "none", "justifyMode": "auto", "orientation": "auto", "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}, "textMode": "auto", "wideLayout": true},
+      "targets": [{"expr": "upgradeAvailable{job=\"synology-snmp\"}", "legendFormat": "DSM", "refId": "A"}],
+      "title": "DSM update",
+      "type": "stat"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "description": "NAS chassis temperature. Warning at 50°C and critical at 60°C.",
+      "fieldConfig": {"defaults": {"max": 80, "min": 0, "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}, {"color": "yellow", "value": 50}, {"color": "red", "value": 60}]}, "unit": "celsius"}, "overrides": []},
+      "gridPos": {"h": 4, "w": 4, "x": 12, "y": 0},
+      "id": 4,
+      "options": {"minVizHeight": 75, "minVizWidth": 75, "orientation": "auto", "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}, "showThresholdLabels": false, "showThresholdMarkers": true, "sizing": "auto"},
+      "targets": [{"expr": "temperature{job=\"synology-snmp\"}", "legendFormat": "Chassis", "refId": "A"}],
+      "title": "NAS temperature",
+      "type": "gauge"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "description": "Duration of the SNMP walk. The production scrape timeout is 30 seconds.",
+      "fieldConfig": {"defaults": {"decimals": 2, "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}, {"color": "yellow", "value": 10}, {"color": "red", "value": 20}]}, "unit": "s"}, "overrides": []},
+      "gridPos": {"h": 4, "w": 4, "x": 16, "y": 0},
+      "id": 5,
+      "options": {"colorMode": "value", "graphMode": "area", "justifyMode": "auto", "orientation": "auto", "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}, "textMode": "auto", "wideLayout": true},
+      "targets": [{"expr": "snmp_scrape_duration_seconds{job=\"synology-snmp\"}", "legendFormat": "SNMP walk", "refId": "A"}],
+      "title": "SNMP scrape time",
+      "type": "stat"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "description": "Model and DSM release labels from the Synology MIB.",
+      "fieldConfig": {"defaults": {"thresholds": {"mode": "absolute", "steps": [{"color": "blue", "value": null}]}}, "overrides": []},
+      "gridPos": {"h": 4, "w": 4, "x": 20, "y": 0},
+      "id": 6,
+      "options": {"colorMode": "none", "graphMode": "none", "justifyMode": "auto", "orientation": "horizontal", "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}, "textMode": "name", "wideLayout": true},
+      "targets": [{"expr": "modelName{job=\"synology-snmp\"}", "legendFormat": "{{modelName}}", "refId": "A"}, {"expr": "version{job=\"synology-snmp\"}", "legendFormat": "{{version}}", "refId": "B"}],
+      "title": "System information",
+      "type": "stat"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "description": "Used percentage for DSM volumes only. Storage-pool unallocated space is intentionally excluded.",
+      "fieldConfig": {"defaults": {"max": 100, "min": 0, "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}, {"color": "yellow", "value": 75}, {"color": "red", "value": 90}]}, "unit": "percent"}, "overrides": []},
+      "gridPos": {"h": 7, "w": 10, "x": 0, "y": 4},
+      "id": 7,
+      "options": {"displayMode": "gradient", "maxVizHeight": 300, "minVizHeight": 16, "minVizWidth": 8, "namePlacement": "auto", "orientation": "horizontal", "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}, "showUnfilled": true, "sizing": "auto", "valueMode": "color"},
+      "targets": [{"expr": "100 * (1 - raidFreeSize{job=\"synology-snmp\",raidName=~\"Volume .*\"} / raidTotalSize{job=\"synology-snmp\",raidName=~\"Volume .*\"})", "legendFormat": "{{raidName}}", "refId": "A"}],
+      "title": "Volume utilization",
+      "type": "bargauge"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "description": "Currently free bytes in each DSM volume.",
+      "fieldConfig": {"defaults": {"decimals": 2, "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}]}, "unit": "bytes"}, "overrides": []},
+      "gridPos": {"h": 7, "w": 7, "x": 10, "y": 4},
+      "id": 8,
+      "options": {"colorMode": "value", "graphMode": "area", "justifyMode": "auto", "orientation": "horizontal", "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}, "textMode": "auto", "wideLayout": true},
+      "targets": [{"expr": "raidFreeSize{job=\"synology-snmp\",raidName=~\"Volume .*\"}", "legendFormat": "{{raidName}}", "refId": "A"}],
+      "title": "Volume free space",
+      "type": "stat"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "description": "Storage-pool and volume RAID state. Synology reports 1 as normal.",
+      "fieldConfig": {"defaults": {"mappings": [{"options": {"1": {"color": "green", "index": 0, "text": "Normal"}}, "type": "value"}, {"options": {"from": 1.000001, "result": {"color": "red", "index": 1, "text": "Attention"}, "to": 100}, "type": "range"}], "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}, {"color": "red", "value": 1.000001}]}}, "overrides": []},
+      "gridPos": {"h": 7, "w": 7, "x": 17, "y": 4},
+      "id": 9,
+      "options": {"colorMode": "background", "graphMode": "none", "justifyMode": "auto", "orientation": "horizontal", "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}, "textMode": "auto", "wideLayout": true},
+      "targets": [{"expr": "raidStatus{job=\"synology-snmp\"}", "legendFormat": "{{raidName}}", "refId": "A"}],
+      "title": "RAID and volume health",
+      "type": "stat"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "description": "Drive health enriched with the exported drive-model label. Synology reports 1 as healthy.",
+      "fieldConfig": {"defaults": {"mappings": [{"options": {"1": {"color": "green", "index": 0, "text": "Healthy"}}, "type": "value"}, {"options": {"from": 1.000001, "result": {"color": "red", "index": 1, "text": "Attention"}, "to": 100}, "type": "range"}], "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}, {"color": "red", "value": 1.000001}]}}, "overrides": []},
+      "gridPos": {"h": 7, "w": 12, "x": 0, "y": 11},
+      "id": 10,
+      "options": {"colorMode": "background", "graphMode": "none", "justifyMode": "auto", "orientation": "horizontal", "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}, "textMode": "auto", "wideLayout": true},
+      "targets": [{"expr": "diskHealthStatus{job=\"synology-snmp\"} * on(instance,diskID) group_left(diskModel) diskModel{job=\"synology-snmp\"}", "legendFormat": "{{diskModel}}", "refId": "A"}],
+      "title": "Disk health",
+      "type": "stat"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "description": "Temperature per physical disk, with drive model added from the Synology inventory metric.",
+      "fieldConfig": {"defaults": {"thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}, {"color": "yellow", "value": 50}, {"color": "red", "value": 60}]}, "unit": "celsius"}, "overrides": []},
+      "gridPos": {"h": 7, "w": 12, "x": 12, "y": 11},
+      "id": 11,
+      "options": {"legend": {"calcs": ["lastNotNull", "max"], "displayMode": "table", "placement": "right", "showLegend": true}, "tooltip": {"hideZeros": false, "mode": "multi", "sort": "desc"}},
+      "targets": [{"expr": "diskTemperature{job=\"synology-snmp\"} * on(instance,diskID) group_left(diskModel) diskModel{job=\"synology-snmp\"}", "legendFormat": "{{diskModel}}", "refId": "A"}],
+      "title": "Disk temperatures",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "description": "Bad-sector counter per physical disk. Any non-zero value warrants investigation.",
+      "fieldConfig": {"defaults": {"thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}, {"color": "red", "value": 1}]}, "unit": "short"}, "overrides": []},
+      "gridPos": {"h": 7, "w": 8, "x": 0, "y": 18},
+      "id": 12,
+      "options": {"colorMode": "background", "graphMode": "area", "justifyMode": "auto", "orientation": "horizontal", "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}, "textMode": "auto", "wideLayout": true},
+      "targets": [{"expr": "diskBadSector{job=\"synology-snmp\"} * on(instance,diskID) group_left(diskModel) diskModel{job=\"synology-snmp\"}", "legendFormat": "{{diskModel}}", "refId": "A"}],
+      "title": "Disk bad sectors",
+      "type": "stat"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "description": "Current Synology storage I/O load indicator per Linux block device.",
+      "fieldConfig": {"defaults": {"min": 0, "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}, {"color": "yellow", "value": 70}, {"color": "red", "value": 90}]}, "unit": "percent"}, "overrides": []},
+      "gridPos": {"h": 7, "w": 8, "x": 8, "y": 18},
+      "id": 13,
+      "options": {"legend": {"calcs": ["lastNotNull", "max"], "displayMode": "table", "placement": "right", "showLegend": true}, "tooltip": {"hideZeros": false, "mode": "multi", "sort": "desc"}},
+      "targets": [{"expr": "storageIOLA{job=\"synology-snmp\"}", "legendFormat": "{{storageIODevice}}", "refId": "A"}],
+      "title": "Disk load",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "description": "Current connected-user counts by DSM service.",
+      "fieldConfig": {"defaults": {"min": 0, "thresholds": {"mode": "absolute", "steps": [{"color": "blue", "value": null}]}, "unit": "short"}, "overrides": []},
+      "gridPos": {"h": 7, "w": 8, "x": 16, "y": 18},
+      "id": 14,
+      "options": {"displayMode": "gradient", "maxVizHeight": 300, "minVizHeight": 16, "minVizWidth": 8, "namePlacement": "auto", "orientation": "horizontal", "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}, "showUnfilled": true, "sizing": "auto", "valueMode": "color"},
+      "targets": [{"expr": "serviceUsers{job=\"synology-snmp\"}", "legendFormat": "{{serviceName}}", "refId": "A"}],
+      "title": "Connected service users",
+      "type": "bargauge"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "description": "Ten-minute read/write byte rates from the 64-bit Synology disk counters.",
+      "fieldConfig": {"defaults": {"min": 0, "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}]}, "unit": "Bps"}, "overrides": []},
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 25},
+      "id": 15,
+      "options": {"legend": {"calcs": ["lastNotNull", "max"], "displayMode": "table", "placement": "right", "showLegend": true}, "tooltip": {"hideZeros": false, "mode": "multi", "sort": "desc"}},
+      "targets": [{"expr": "rate(storageIONReadX{job=\"synology-snmp\"}[10m])", "legendFormat": "Read {{storageIODevice}}", "refId": "A"}, {"expr": "rate(storageIONWrittenX{job=\"synology-snmp\"}[10m])", "legendFormat": "Write {{storageIODevice}}", "refId": "B"}],
+      "title": "Physical disk throughput",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "description": "Ten-minute physical-disk read/write operation rates.",
+      "fieldConfig": {"defaults": {"min": 0, "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}]}, "unit": "iops"}, "overrides": []},
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 25},
+      "id": 16,
+      "options": {"legend": {"calcs": ["lastNotNull", "max"], "displayMode": "table", "placement": "right", "showLegend": true}, "tooltip": {"hideZeros": false, "mode": "multi", "sort": "desc"}},
+      "targets": [{"expr": "rate(storageIOReads{job=\"synology-snmp\"}[10m])", "legendFormat": "Read {{storageIODevice}}", "refId": "A"}, {"expr": "rate(storageIOWrites{job=\"synology-snmp\"}[10m])", "legendFormat": "Write {{storageIODevice}}", "refId": "B"}],
+      "title": "Physical disk IOPS",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "description": "Ten-minute read/write byte rates at the DSM volume block-device layer.",
+      "fieldConfig": {"defaults": {"min": 0, "thresholds": {"mode": "absolute", "steps": [{"color": "blue", "value": null}]}, "unit": "Bps"}, "overrides": []},
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 33},
+      "id": 17,
+      "options": {"legend": {"calcs": ["lastNotNull", "max"], "displayMode": "table", "placement": "right", "showLegend": true}, "tooltip": {"hideZeros": false, "mode": "multi", "sort": "desc"}},
+      "targets": [{"expr": "rate(spaceIONReadX{job=\"synology-snmp\"}[10m])", "legendFormat": "Read {{spaceIODevice}}", "refId": "A"}, {"expr": "rate(spaceIONWrittenX{job=\"synology-snmp\"}[10m])", "legendFormat": "Write {{spaceIODevice}}", "refId": "B"}],
+      "title": "Volume-layer throughput",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "description": "Exporter packet activity and retry rate. Sustained retries indicate network or DSM SNMP pressure.",
+      "fieldConfig": {"defaults": {"min": 0, "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}, {"color": "yellow", "value": 0.01}]}, "unit": "pps"}, "overrides": []},
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 33},
+      "id": 18,
+      "options": {"legend": {"calcs": ["lastNotNull", "max"], "displayMode": "table", "placement": "right", "showLegend": true}, "tooltip": {"hideZeros": false, "mode": "multi", "sort": "desc"}},
+      "targets": [{"expr": "rate(snmp_scrape_packets_sent{job=\"synology-snmp\"}[10m])", "legendFormat": "Packets sent", "refId": "A"}, {"expr": "rate(snmp_scrape_packets_retried{job=\"synology-snmp\"}[10m])", "legendFormat": "Packets retried", "refId": "B"}],
+      "title": "SNMP packet activity",
+      "type": "timeseries"
+    }
+  ],
+  "refresh": "2m",
+  "schemaVersion": 41,
+  "tags": ["homelab", "synology", "snmpv3", "storage"],
+  "templating": {"list": []},
+  "time": {"from": "now-24h", "to": "now"},
+  "timezone": "browser",
+  "title": "Synology NAS",
+  "uid": "homelab-synology",
+  "version": 2
+}

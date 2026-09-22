@@ -1,0 +1,87 @@
+---
+- Core services:
+    - Nginx Proxy Manager:
+        icon: nginx-proxy-manager.png
+        href: http://127.0.0.1:8181
+        description: Admin requires the documented SSH tunnel
+        siteMonitor: http://npm:81
+    - Uptime Kuma:
+        icon: uptime-kuma.png
+        href: https://status.lab.example.com
+        description: Availability monitoring
+        siteMonitor: http://uptime-kuma:3001
+    - IT-Tools:
+        icon: it-tools.png
+        href: https://tools.lab.example.com
+        description: Browser-side utility collection
+        siteMonitor: http://it-tools:80
+    - NetKnife:
+        icon: mdi-knife-military
+        href: https://netknife.lab.example.com
+        description: Network and security toolkit
+        siteMonitor: http://netknife-web:8080/health
+    - Linkding:
+        icon: linkding.png
+        href: https://links.lab.example.com
+        description: Local bookmark manager
+        siteMonitor: http://linkding:9090
+    - PairDrop:
+        icon: pairdrop.png
+        href: https://drop.lab.example.com
+        description: Local peer-to-peer file transfer
+        siteMonitor: http://pairdrop:3000
+    - Speedtest Tracker:
+        icon: speedtest-tracker.png
+        href: https://speed.lab.example.com
+        description: Scheduled WAN performance history
+        siteMonitor: http://speedtest-tracker:80
+
+- Infrastructure:
+    - Proxmox cluster:
+        icon: proxmox.png
+        href: https://192.168.0.11:8006
+        description: Three-node homelab cluster
+        siteMonitor: https://192.168.0.11:8006
+    - Synology:
+        icon: synology.png
+        href: https://192.168.0.20:5001
+        description: nas1 NAS
+        siteMonitor: https://192.168.0.20:5001
+
+    - NetBox:
+        icon: netbox.png
+        href: https://netbox.lab.example.com
+        description: IPAM and DCIM source of truth
+        siteMonitor: http://192.168.0.50:8000/login/
+    - OpenBao:
+        icon: mdi-safe
+        href: https://bao.lab.example.com
+        description: Uninitialized secrets plane; attended ceremony still required
+        siteMonitor: http://192.168.0.40:8200/v1/sys/health?standbyok=true&uninitcode=200
+
+- Observability:
+    - Grafana:
+        icon: grafana.png
+        href: https://grafana.lab.example.com
+        description: Dashboards, metrics, logs, and alerts
+        siteMonitor: http://192.168.0.31:3000/api/health
+    - cAdvisor:
+        icon: cadvisor.png
+        href: https://grafana.lab.example.com/d/homelab-docker?orgId=1
+        description: Container CPU, memory, and network from cAdvisor
+        siteMonitor: http://192.168.0.31:3000/api/health
+    - Prometheus:
+        icon: prometheus.png
+        href: https://prometheus.lab.example.com
+        description: Metrics, targets, rules, and queries
+        siteMonitor: http://192.168.0.31:9090/-/ready
+    - Alertmanager:
+        icon: alertmanager.png
+        href: https://alert.lab.example.com
+        description: Active alerts and silences
+        siteMonitor: http://192.168.0.31:9093/-/ready
+    - Loki:
+        icon: loki.png
+        href: https://grafana.lab.example.com/d/homelab-logs?orgId=1
+        description: Search and filter logs in Grafana
+        siteMonitor: http://192.168.0.31:3100/ready

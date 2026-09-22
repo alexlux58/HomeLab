@@ -1,0 +1,57 @@
+---
+groups:
+  - name: linux-hosts
+    rules:
+      - alert: HostCpuSustainedHigh
+        expr: 100 - (avg by (instance) (rate(node_cpu_seconds_total{mode="idle"}[5m])) * 100) > 85
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Sustained CPU pressure on {{ $labels.instance }}"
+          description: "CPU use exceeded 85% for 15 minutes."
+
+      - alert: HostMemoryLow
+        expr: node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes < 0.10
+        for: 10m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Available memory is low on {{ $labels.instance }}"
+          description: "Less than 10% of RAM has remained available for ten minutes."
+
+      - alert: FilesystemFilling
+        expr: node_filesystem_avail_bytes{fstype!~"tmpfs|overlay|squashfs"} / node_filesystem_size_bytes < 0.15
+        for: 30m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Filesystem is filling on {{ $labels.instance }}"
+          description: "Less than 15% remains on {{ $labels.mountpoint }}."
+
+      - alert: FilesystemCritical
+        expr: node_filesystem_avail_bytes{fstype!~"tmpfs|overlay|squashfs"} / node_filesystem_size_bytes < 0.07
+        for: 10m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Filesystem is critically full on {{ $labels.instance }}"
+          description: "Less than 7% remains on {{ $labels.mountpoint }}."
+
+      - alert: HostTemperatureHigh
+        expr: node_hwmon_temp_celsius > 85
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High hardware temperature on {{ $labels.instance }}"
+          description: "A reported hardware sensor is above 85°C."
+
+      - alert: ClockSkew
+        expr: abs(node_timex_offset_seconds) > 0.1
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Clock skew on {{ $labels.instance }}"
+          description: "Clock offset exceeded 100ms for 15 minutes."

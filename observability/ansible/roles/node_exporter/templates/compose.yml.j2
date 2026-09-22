@@ -1,0 +1,29 @@
+---
+services:
+  node-exporter:
+    image: {{ node_exporter_image }}
+    restart: unless-stopped
+    pid: host
+    security_opt:
+      - no-new-privileges:true
+    command:
+      - --path.procfs=/host/proc
+      - --path.sysfs=/host/sys
+      - --path.rootfs=/host/root
+      - --collector.textfile.directory=/var/lib/node_exporter/textfile
+      - --collector.filesystem.mount-points-exclude=^/(sys|proc|dev|host|etc)($$|/)
+    ports:
+      - {{ node_exporter_listen_ip }}:9100:9100
+    volumes:
+      - /:/host/root:ro,rslave
+      - /proc:/host/proc:ro
+      - /sys:/host/sys:ro
+      - /var/lib/node_exporter/textfile:/var/lib/node_exporter/textfile:ro
+    mem_limit: 96m
+    cpus: 0.20
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "3"
+

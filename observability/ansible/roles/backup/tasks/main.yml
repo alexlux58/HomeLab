@@ -1,0 +1,47 @@
+---
+- name: Create observability script directory
+  ansible.builtin.file:
+    path: /opt/observability/scripts
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Install application-aware backup script
+  ansible.builtin.copy:
+    src: "{{ playbook_dir }}/../../scripts/backup.sh"
+    dest: /opt/observability/scripts/backup.sh
+    owner: root
+    group: root
+    mode: "0750"
+
+- name: Install isolated restore drill script
+  ansible.builtin.copy:
+    src: "{{ playbook_dir }}/../../scripts/restore-drill.sh"
+    dest: /opt/observability/scripts/restore-drill.sh
+    owner: root
+    group: root
+    mode: "0750"
+
+- name: Install observability backup service
+  ansible.builtin.copy:
+    src: homelab-observability-backup.service
+    dest: /etc/systemd/system/homelab-observability-backup.service
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Install observability backup timer
+  ansible.builtin.copy:
+    src: homelab-observability-backup.timer
+    dest: /etc/systemd/system/homelab-observability-backup.timer
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Enable observability backup timer
+  ansible.builtin.systemd_service:
+    name: homelab-observability-backup.timer
+    daemon_reload: true
+    enabled: true
+    state: started

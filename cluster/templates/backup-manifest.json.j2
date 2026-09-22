@@ -1,0 +1,21 @@
+{
+  "schema_version": 1,
+  "generated_at": "{{ ansible_date_time.iso8601 }}",
+  "cluster_name": "{{ cluster_name }}",
+  "backup_storage": {
+    "storage_id": "{{ nas_storage_id }}",
+    "nas_ip": "{{ nas_ip }}",
+    "export": "{{ nas_export_path }}",
+    "volume_policy": "volume1 / storage pool 2 only — volume2 and storage pool 1 are forbidden"
+  },
+  "policy": {
+    "generations": ["initial", "final"],
+    "initial_mode": "{{ vzdump_initial_mode }}",
+    "final_mode": "{{ vzdump_final_mode }}",
+    "compression": "{{ vzdump_compress }}",
+    "pruning": "disabled — this project never prunes or deletes an archive",
+    "verification": "sha256 + `zstdcat | vma verify -v -` (QEMU) / `zstd -t` + `tar --zstd -tf` (LXC)"
+  },
+  "expected_guest_count": {{ protected_guests.values() | map('length') | sum }},
+  "archives": {{ manifest_archives | default([]) | to_json }}
+}

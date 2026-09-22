@@ -1,0 +1,70 @@
+---
+- name: Read-only observability host preflight
+  hosts: observability_servers
+  become: true
+  gather_facts: true
+  serial: 1
+  any_errors_fatal: true
+  tasks:
+    - name: Check required operating system family
+      ansible.builtin.assert:
+        that:
+          - ansible_facts.distribution == "Ubuntu"
+          - ansible_facts.distribution_version is version('22.04', '>=')
+          - ansible_facts.architecture == "x86_64"
+        fail_msg: "Observability requires Ubuntu 22.04+ x86_64."
+
+    - name: Collect listening sockets
+      ansible.builtin.command: ss -H -lntup
+      register: observability_preflight_sockets
+      changed_when: false
+
+    - name: Collect block device inventory
+      ansible.builtin.command: lsblk --json --bytes --output NAME,TYPE,SIZE,FSTYPE,MOUNTPOINTS
+      register: observability_preflight_block_devices
+      changed_when: false
+
+    - name: Collect memory state
+      ansible.builtin.command: free --bytes
+      register: observability_preflight_memory
+      changed_when: false
+
+    - name: Collect filesystem state
+      ansible.builtin.command: df --block-size=1 --output=source,fstype,size,used,avail,pcent,target
+      register: observability_preflight_filesystems
+      changed_when: false
+
+    - name: Check Docker availability
+      ansible.builtin.command: docker info --format json
+      register: observability_preflight_docker
+      changed_when: false
+      failed_when: false
+
+    - name: Assert deployment ports are not already occupied
+      ansible.builtin.assert:
+        that:
+          - observability_preflight_sockets.stdout is not regex(':(3000|3100|9090|9093|1514)\\s')
+        fail_msg: "One or more observability ports are already occupied; review preflight output."
+
+    - name: Build sanitized preflight evidence
+      ansible.builtin.set_fact:
+        observability_preflight_evidence:
+          generated_at: "{{ ansible_facts.date_time.iso8601 }}"
+          host: "{{ inventory_hostname }}"
+          address: "{{ ansible_host }}"
+          os: "{{ ansible_facts.distribution }} {{ ansible_facts.distribution_version }}"
+          architecture: "{{ ansible_facts.architecture }}"
+          cpu_vcpus: "{{ ansible_facts.processor_vcpus }}"
+          memory_bytes: "{{ ansible_facts.memtotal_mb | int * 1024 * 1024 }}"
+          root_available_bytes: "{{ ansible_facts.mounts | selectattr('mount', 'equalto', '/') | map(attribute='size_available') | first }}"
+          sockets: "{{ observability_preflight_sockets.stdout_lines }}"
+          block_devices: "{{ observability_preflight_block_devices.stdout | from_json }}"
+          docker_available: "{{ observability_preflight_docker.rc == 0 }}"
+
+    - name: Write sanitized preflight evidence on controller
+      ansible.builtin.copy:
+        content: "{{ observability_preflight_evidence | to_nice_json }}\n"
+        dest: "{{ playbook_dir }}/../../artifacts/preflight.json"
+        mode: "0600"
+      delegate_to: localhost
+      become: false

@@ -1,0 +1,60 @@
+---
+# Stage 4 — second backup generation with guests cleanly shut down.
+#
+#   make backup-final HOST=pve1 EXTRA="-e allow_guest_shutdown=true \
+#     -e guest_shutdown_confirmation='SHUTDOWN GUESTS FOR FINAL BACKUP'"
+#
+# The pre-shutdown power state of every guest is recorded to
+# artifacts/power-state-<host>.json so the migration can be paused and the guests
+# returned to exactly the state they were found in.
+- name: Final stopped-guest backup
+  hosts: preserve
+  gather_facts: true
+  serial: 1
+  any_errors_fatal: true
+  max_fail_percentage: 0
+  tags: [stage4, backup]
+
+  vars:
+    vzdump_backup_generation: final
+    vzdump_backup_mode: "{{ vzdump_final_mode }}"
+    vzdump_backup_stop_guests_first: true
+
+  pre_tasks:
+    - name: Require that the initial generation was verified first
+      ansible.builtin.stat:
+        path: "{{ artifacts_dir }}/backup-manifest-{{ expected_hostname }}.json"
+      delegate_to: localhost
+      become: false
+      register: final_prev_manifest
+
+    - name: Read the initial-generation verification verdict
+      ansible.builtin.stat:
+        path: "{{ artifacts_dir }}/backup-verification.json"
+      delegate_to: localhost
+      become: false
+      register: final_prev_verification
+
+    - name: Assert a verified initial generation exists
+      ansible.builtin.assert:
+        that:
+          - final_prev_manifest.stat.exists
+          - final_prev_verification.stat.exists
+          - (lookup('file', artifacts_dir ~ '/backup-verification.json') | from_json).verdict == 'pass'
+          - (lookup('file', artifacts_dir ~ '/backup-verification.json') | from_json).required_generations == ['initial']
+        fail_msg: >-
+          No passing initial-only verification exists for {{ expected_hostname }}.
+          Run `make verify-backups-initial` before the final generation.
+
+  roles:
+    - role: vzdump_backup
+
+  post_tasks:
+    - name: Explain how to return the guests to their original state
+      ansible.builtin.debug:
+        msg:
+          - "Generation 'final' complete for {{ inventory_hostname }}. Guests are STOPPED."
+          - "Original power state: artifacts/power-state-{{ expected_hostname }}.json"
+          - "To pause the migration and put them back, start each guest that was"
+          - "'running' in that file:  qm start <vmid>"
+          - "Then re-take the final generation when you resume."

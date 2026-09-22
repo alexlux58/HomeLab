@@ -1,0 +1,289 @@
+---
+# Stage 7. Creates the cluster on the seed node only.
+#
+# `pvecm create` on a standalone node keeps that node's guests: it writes a
+# corosync configuration and restarts pve-cluster, it does not touch guest
+# configs. This role still snapshots the pre-state and diffs it afterwards,
+# because "should keep" and "did keep" are different claims.
+
+- name: Assert this is the designated seed node
+  ansible.builtin.assert:
+    that:
+      - cluster_seed | bool
+      - inventory_hostname == cluster_seed_host
+      - ansible_host == cluster_seed_ip
+    fail_msg: >-
+      Cluster creation may only run on the seed node ({{ cluster_seed_host }} /
+      {{ cluster_seed_ip }}), not on {{ inventory_hostname }}.
+
+- name: Assert the node is not already in a cluster
+  ansible.builtin.command: pvecm status
+  changed_when: false
+  failed_when: false
+  register: pve_cluster_existing
+
+- name: Refuse to create a cluster on a node that already has one
+  ansible.builtin.assert:
+    that:
+      - "'Cluster information' not in pve_cluster_existing.stdout"
+    fail_msg: |
+      {{ inventory_hostname }} is already part of a cluster:
+      {{ pve_cluster_existing.stdout }}
+      Refusing to run `pvecm create` again.
+
+- name: Assert /etc/pve is mounted and healthy
+  ansible.builtin.command:
+    argv: [findmnt, -n, -o, "SOURCE,FSTYPE,TARGET", /etc/pve]
+  changed_when: false
+  register: pve_cluster_pmxcfs
+
+- name: Confirm the PVE cluster filesystem service is active
+  ansible.builtin.service_facts:
+
+- name: Confirm the pmxcfs process owns the cluster filesystem
+  ansible.builtin.command:
+    argv: [pgrep, -x, pmxcfs]
+  changed_when: false
+  register: pve_cluster_pmxcfs_process
+
+- name: Verify pmxcfs is the filesystem backing /etc/pve
+  ansible.builtin.assert:
+    that:
+      - >-
+        'fuse.pve-cluster' in pve_cluster_pmxcfs.stdout or
+        'pmxcfs' in pve_cluster_pmxcfs.stdout or
+        ('/dev/fuse fuse /etc/pve' in pve_cluster_pmxcfs.stdout and
+         ansible_facts.services['pve-cluster.service'].state == 'running' and
+         pve_cluster_pmxcfs_process.stdout | trim | length > 0)
+    fail_msg: "/etc/pve is not backed by pmxcfs ({{ pve_cluster_pmxcfs.stdout }}). Fix the cluster filesystem first."
+
+- name: Confirm the running release matches the approved target
+  ansible.builtin.command: pveversion
+  changed_when: false
+  register: pve_cluster_version
+
+- name: Assert the seed is on the approved target release
+  ansible.builtin.assert:
+    that:
+      - pve_cluster_version.stdout is search('pve-manager/' ~ target_pve_major ~ '\.')
+    fail_msg: >-
+      {{ inventory_hostname }} reports {{ pve_cluster_version.stdout }} but the cluster
+      must be created on Proxmox VE {{ target_pve_release }}. Complete stage 6 first.
+
+- name: Confirm the hostname resolves to this node's own address
+  ansible.builtin.command:
+    argv: [getent, hosts, "{{ expected_hostname }}"]
+  changed_when: false
+  register: pve_cluster_resolve
+
+- name: Assert hostname resolution is correct and not pointing at 127.0.1.1
+  ansible.builtin.assert:
+    that:
+      - cluster_seed_ip in pve_cluster_resolve.stdout
+      - "'127.0.1.1' not in pve_cluster_resolve.stdout"
+    fail_msg: |
+      '{{ expected_hostname }}' resolves to '{{ pve_cluster_resolve.stdout }}'.
+      Corosync needs it to resolve to {{ cluster_seed_ip }}. Fix /etc/hosts before
+      creating the cluster — this is the single most common cause of a broken
+      Proxmox cluster.
+
+- name: Assert the clock is synchronised
+  ansible.builtin.command: timedatectl show
+  changed_when: false
+  register: pve_cluster_time
+
+- name: Verify NTP synchronisation
+  ansible.builtin.assert:
+    that:
+      - "'NTPSynchronized=yes' in pve_cluster_time.stdout"
+    fail_msg: "Corosync requires synchronised clocks; {{ inventory_hostname }} is not synchronised."
+
+- name: Assert the management link is a wired interface that is up
+  ansible.builtin.command:
+    argv: [ip, -br, address, show, up]
+  changed_when: false
+  register: pve_cluster_links
+
+- name: Verify the seed address is present on an interface that is up
+  ansible.builtin.assert:
+    that:
+      - cluster_seed_ip in pve_cluster_links.stdout
+    fail_msg: "{{ cluster_seed_ip }} is not configured on any interface that is up."
+
+- name: Confirm the corosync UDP port range is not already occupied
+  ansible.builtin.shell: |
+    set -o pipefail
+    ss -lun | awk '{print $5}' | grep -cE ':(54(0[5-9]|1[0-2]))$' || true
+  args:
+    executable: /bin/bash
+  changed_when: false
+  register: pve_cluster_ports
+
+- name: Warn if something already listens in the corosync port range
+  ansible.builtin.debug:
+    msg: >-
+      NOTE {{ pve_cluster_ports.stdout | trim }} socket(s) already listen on UDP
+      {{ corosync_udp_port_range[0] }}-{{ corosync_udp_port_range[1] }}. If this node
+      is not clustered, investigate before continuing.
+  when: (pve_cluster_ports.stdout | trim | int) > 0
+
+- name: Look for tasks that must not overlap with cluster creation
+  ansible.builtin.command:
+    argv: [pvesh, get, "/nodes/{{ expected_hostname }}/tasks", --limit, "30", --output-format, json]
+  changed_when: false
+  register: pve_cluster_tasks
+
+- name: Assert no backup, migration or package task is running
+  ansible.builtin.assert:
+    that:
+      - pve_cluster_tasks.stdout | from_json | rejectattr('endtime', 'defined')
+        | selectattr('type', 'match', '(vzdump|qmigrate|qmrestore|apt)') | list | length == 0
+    fail_msg: "A conflicting task is running on {{ inventory_hostname }}. Wait for it to finish."
+
+- name: Capture the complete pre-change guest and storage inventory
+  ansible.builtin.command:
+    argv: [pvesh, get, "/nodes/{{ expected_hostname }}/qemu", --output-format, json]
+  changed_when: false
+  register: pve_cluster_pre_guests
+
+- name: Capture the pre-change storage configuration
+  ansible.builtin.slurp:
+    src: /etc/pve/storage.cfg
+  register: pve_cluster_pre_storage
+
+- name: Save the pre-change state to the controller
+  ansible.builtin.copy:
+    content: |
+      {{ {
+           'captured_at': ansible_date_time.iso8601,
+           'host': inventory_hostname,
+           'guests': pve_cluster_pre_guests.stdout | from_json,
+           'storage_cfg': pve_cluster_pre_storage.content | b64decode
+         } | to_nice_json }}
+    dest: "{{ artifacts_dir }}/pre-cluster-{{ expected_hostname }}.json"
+    mode: "0644"
+  delegate_to: localhost
+  become: false
+
+- name: Show the proposed change
+  ansible.builtin.debug:
+    msg:
+      - "PROPOSED CHANGE on {{ inventory_hostname }} ({{ ansible_host }}):"
+      - "  pvecm create {{ cluster_name }} --link0 {{ pve_cluster_link0_address }}"
+      - ""
+      - "  guests currently registered: {{ pve_cluster_pre_guests.stdout | from_json | map(attribute='vmid') | list }}"
+      - "  storage definitions:         {{ (pve_cluster_pre_storage.content | b64decode).splitlines() | select('match', '^[a-z]+:') | list }}"
+      - "  HA will NOT be enabled (enable_ha={{ enable_ha }})."
+      - ""
+      - "  Pre-change state saved to artifacts/pre-cluster-{{ expected_hostname }}.json"
+
+- name: Require explicit approval to create the cluster
+  ansible.builtin.assert:
+    that:
+      - allow_create_cluster | bool
+      - create_cluster_confirmation == create_cluster_confirmation_required
+    fail_msg: |
+      Refusing to create the cluster. Re-run with BOTH of:
+        -e allow_create_cluster=true
+        -e create_cluster_confirmation='{{ create_cluster_confirmation_required }}'
+
+- name: Require the destructive opt-in tag as well as the approval variables
+  ansible.builtin.assert:
+    that:
+      - "'destructive' in ansible_run_tags or 'never' in ansible_run_tags"
+    fail_msg: |
+      The approval variables are set, but the destructive tasks in this play are
+      tagged `never,destructive` and were therefore not requested.
+
+      Re-run the same command with the explicit opt-in:
+        --tags all,destructive
+      (the Makefile targets for destructive stages already pass this).
+    success_msg: "Destructive opt-in present (--tags all,destructive)."
+
+- name: Create the cluster
+  ansible.builtin.command:
+    argv:
+      - pvecm
+      - create
+      - "{{ cluster_name }}"
+      - --link0
+      - "{{ pve_cluster_link0_address }}"
+  changed_when: true
+  register: pve_cluster_create
+  tags: [never, destructive, cluster_create]
+
+- name: Wait for corosync and pve-cluster to settle
+  ansible.builtin.wait_for:
+    timeout: "{{ pve_cluster_post_wait_seconds }}"
+  delegate_to: localhost
+  become: false
+
+- name: Read the cluster status
+  ansible.builtin.command: pvecm status
+  changed_when: false
+  register: pve_cluster_status
+  retries: 6
+  delay: 10
+  until: "'Quorate' in pve_cluster_status.stdout"
+
+- name: Assert the seed node is quorate
+  ansible.builtin.assert:
+    that:
+      - "'Quorate:' in pve_cluster_status.stdout"
+      - pve_cluster_status.stdout is search('Quorate:\\s+Yes')
+    fail_msg: |
+      The cluster was created but {{ inventory_hostname }} is not quorate:
+      {{ pve_cluster_status.stdout }}
+      Do NOT work around this with `pvecm expected 1`. Investigate corosync.
+
+- name: Re-read the guest inventory after clustering
+  ansible.builtin.command:
+    argv: [pvesh, get, "/nodes/{{ expected_hostname }}/qemu", --output-format, json]
+  changed_when: false
+  register: pve_cluster_post_guests
+
+- name: Assert every guest is still registered
+  ansible.builtin.assert:
+    that:
+      - (pve_cluster_post_guests.stdout | from_json | map(attribute='vmid') | map('int') | list | sort)
+        == (pve_cluster_pre_guests.stdout | from_json | map(attribute='vmid') | map('int') | list | sort)
+    fail_msg: |
+      GUESTS WENT MISSING when the cluster was created.
+        before: {{ pve_cluster_pre_guests.stdout | from_json | map(attribute='vmid') | list | sort }}
+        after:  {{ pve_cluster_post_guests.stdout | from_json | map(attribute='vmid') | list | sort }}
+      Stop immediately and consult docs/rollback.md.
+    success_msg: >-
+      All {{ pve_cluster_pre_guests.stdout | from_json | length }} guests are still
+      registered on {{ inventory_hostname }}.
+
+- name: Re-read the storage configuration after clustering
+  ansible.builtin.slurp:
+    src: /etc/pve/storage.cfg
+  register: pve_cluster_post_storage
+
+- name: Assert no storage definition disappeared
+  ansible.builtin.assert:
+    that:
+      - ((pve_cluster_pre_storage.content | b64decode).splitlines() | select('match', '^[a-z]+:') | list)
+        | difference((pve_cluster_post_storage.content | b64decode).splitlines() | select('match', '^[a-z]+:') | list)
+        | length == 0
+    fail_msg: "A storage definition disappeared during cluster creation. Stop and investigate."
+
+- name: Confirm HA was not enabled
+  ansible.builtin.command:
+    argv: [pvesh, get, /cluster/ha/resources, --output-format, json]
+  changed_when: false
+  failed_when: false
+  register: pve_cluster_ha
+
+- name: Assert no HA resources exist
+  ansible.builtin.assert:
+    that:
+      - (pve_cluster_ha.stdout | default('[]') | from_json | length) == 0
+    fail_msg: "HA resources are configured but this design deliberately does not use HA."
+
+- name: Report the result
+  ansible.builtin.debug:
+    msg:
+      - "Cluster '{{ cluster_name }}' created on {{ inventory_hostname }}."
+      - "{{ pve_cluster_status.stdout_lines }}"

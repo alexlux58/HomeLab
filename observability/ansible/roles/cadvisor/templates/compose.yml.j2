@@ -1,0 +1,33 @@
+---
+services:
+  cadvisor:
+    image: {{ cadvisor_image }}
+    restart: unless-stopped
+    privileged: true
+    security_opt:
+      - no-new-privileges:true
+    command:
+      - --docker_only=true
+      - --housekeeping_interval=30s
+      - --max_housekeeping_interval=60s
+      - --store_container_labels=false
+      - --event_storage_event_limit=default=0
+      - --event_storage_age_limit=default=0
+    ports:
+      - {{ cadvisor_listen_ip }}:8080:8080
+    devices:
+      - /dev/kmsg:/dev/kmsg
+    volumes:
+      - /:/rootfs:ro
+      - /var/run:/var/run:ro
+      - /sys:/sys:ro
+      - /var/lib/docker:/var/lib/docker:ro
+      - /dev/disk:/dev/disk:ro
+    mem_limit: 224m
+    cpus: 0.35
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "3"
+

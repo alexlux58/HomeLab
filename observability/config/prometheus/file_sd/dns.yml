@@ -1,0 +1,16 @@
+---
+# Authoritative split-horizon DNS check for the private zone.
+#
+# ONLY the Synology at 192.168.0.20 is authoritative for lab.example.com.
+#
+# Do NOT re-add 192.168.0.1:53 here. The the router is deliberately NOT configured to
+# serve this zone: making it authoritative takes the home-automation hub offline.
+# Guests reach the private zone through a systemd-resolved routing domain
+# (/etc/systemd/resolved.conf.d/lab-dns.conf) that sends only lab.example.com
+# to 192.168.0.20, while general resolution stays on the the router. Probing the the router
+# with the dns_lab module asserts a requirement this architecture rejects and
+# fires DnsResolutionFailed and EndpointDown permanently.
+- targets:
+    - 192.168.0.20:53
+  labels:
+    zone: lab.example.com

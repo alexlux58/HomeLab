@@ -1,0 +1,209 @@
+---
+- name: Install common packages
+  ansible.builtin.apt:
+    name: "{{ common_packages }}"
+    state: present
+    update_cache: true
+    cache_valid_time: 3600
+
+- name: Set system timezone
+  community.general.timezone:
+    name: "{{ common_timezone }}"
+
+- name: Ensure journald drop-in directory exists
+  ansible.builtin.file:
+    path: /etc/systemd/journald.conf.d
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Bound persistent journal storage
+  ansible.builtin.copy:
+    content: |
+      [Journal]
+      Storage=persistent
+      SystemMaxUse={{ common_journald_system_max_use }}
+      RuntimeMaxUse=64M
+      MaxRetentionSec=7day
+      Compress=yes
+    dest: /etc/systemd/journald.conf.d/99-observability.conf
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Restart journald
+
+- name: Create Node Exporter textfile directory
+  ansible.builtin.file:
+    path: /var/lib/node_exporter/textfile
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Install low-memory virtual machine tuning
+  ansible.builtin.copy:
+    content: |
+      vm.swappiness=10
+      vm.vfs_cache_pressure=100
+      fs.inotify.max_user_watches=262144
+    dest: /etc/sysctl.d/99-observability.conf
+    owner: root
+    group: root
+    mode: "0644"
+  register: common_sysctl_config
+  notify: Apply sysctl
+
+- name: Configure unattended security updates
+  ansible.builtin.copy:
+    content: |
+      APT::Periodic::Update-Package-Lists "1";
+      APT::Periodic::Unattended-Upgrade "1";
+      APT::Periodic::Download-Upgradeable-Packages "1";
+      APT::Periodic::AutocleanInterval "7";
+    dest: /etc/apt/apt.conf.d/20auto-upgrades
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Disable unattended automatic reboots
+  ansible.builtin.copy:
+    content: |
+      Unattended-Upgrade::Remove-Unused-Dependencies "false";
+      Unattended-Upgrade::Automatic-Reboot "false";
+    dest: /etc/apt/apt.conf.d/52observability-unattended-upgrades
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Install key-only SSH hardening
+  ansible.builtin.copy:
+    content: |
+      PermitRootLogin no
+      PubkeyAuthentication yes
+      PasswordAuthentication no
+      KbdInteractiveAuthentication no
+      PermitEmptyPasswords no
+      X11Forwarding no
+      AllowAgentForwarding no
+      AllowTcpForwarding local
+      GatewayPorts no
+      PermitTunnel no
+      MaxAuthTries 3
+      LoginGraceTime 30
+      ClientAliveInterval {{ common_ssh_client_alive_interval }}
+      ClientAliveCountMax {{ common_ssh_client_alive_count_max }}
+      AllowUsers {{ common_admin_user }}
+    dest: /etc/ssh/sshd_config.d/99-observability-hardening.conf
+    owner: root
+    group: root
+    mode: "0644"
+    validate: /usr/sbin/sshd -t -f %s
+  notify: Reload SSH
+
+- name: Enable QEMU guest agent
+  ansible.builtin.systemd_service:
+    name: qemu-guest-agent
+    state: started
+    enabled: true
+
+- name: Enable weekly filesystem trimming
+  ansible.builtin.systemd_service:
+    name: fstrim.timer
+    state: started
+    enabled: true
+
+- name: Inspect emergency swap file
+  ansible.builtin.stat:
+    path: /swapfile
+  register: common_swapfile
+
+- name: Refuse an unexpected emergency swap path
+  ansible.builtin.assert:
+    that:
+      - not common_swapfile.stat.exists or common_swapfile.stat.isreg
+    fail_msg: /swapfile exists but is not a regular file; refusing to modify it
+
+- name: Allocate emergency swap file
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/fallocate
+      - --length
+      - "{{ common_swap_size_mb }}M"
+      - /swapfile
+    creates: /swapfile
+  register: common_swapfile_allocate
+  when:
+    - ansible_swaptotal_mb < 512
+    - not common_swapfile.stat.exists
+
+- name: Protect emergency swap file permissions
+  ansible.builtin.file:
+    path: /swapfile
+    owner: root
+    group: root
+    mode: "0600"
+  when:
+    - ansible_swaptotal_mb < 512
+    - common_swapfile.stat.exists or common_swapfile_allocate is changed
+
+- name: Inspect emergency swap signature
+  ansible.builtin.command:
+    argv:
+      - /usr/sbin/blkid
+      - --probe
+      - --match-tag
+      - TYPE
+      - --output
+      - value
+      - /swapfile
+  register: common_swap_signature
+  changed_when: false
+  failed_when: common_swap_signature.rc not in [0, 2]
+  when:
+    - ansible_swaptotal_mb < 512
+    - common_swapfile.stat.exists or common_swapfile_allocate is changed
+
+- name: Format emergency swap file when needed
+  ansible.builtin.command:
+    argv:
+      - /usr/sbin/mkswap
+      - /swapfile
+  changed_when: true
+  when:
+    - ansible_swaptotal_mb < 512
+    - common_swap_signature.stdout | default('') != 'swap'
+
+- name: Persist emergency swap mount
+  ansible.builtin.lineinfile:
+    path: /etc/fstab
+    regexp: '^/swapfile\s+'
+    line: /swapfile none swap sw 0 0
+    owner: root
+    group: root
+    mode: "0644"
+  when:
+    - ansible_swaptotal_mb < 512
+    - common_swapfile.stat.exists or common_swapfile_allocate is changed
+
+- name: Activate emergency swap
+  ansible.builtin.command:
+    argv:
+      - /usr/sbin/swapon
+      - /swapfile
+  changed_when: true
+  when:
+    - ansible_swaptotal_mb < 512
+    - common_swapfile.stat.exists or common_swapfile_allocate is changed
+
+- name: Apply service configuration before reconnect test
+  ansible.builtin.meta: flush_handlers
+
+- name: Reset SSH connection after hardening
+  ansible.builtin.meta: reset_connection
+
+- name: Verify a new hardened SSH connection
+  ansible.builtin.wait_for_connection:
+    connect_timeout: 5
+    sleep: 1
+    timeout: 30

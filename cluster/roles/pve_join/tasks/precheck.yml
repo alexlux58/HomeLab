@@ -1,0 +1,152 @@
+---
+- name: Read the joining node's version
+  ansible.builtin.command: pveversion
+  changed_when: false
+  register: pve_join_version
+
+- name: Read the seed node's version
+  ansible.builtin.command: pveversion
+  changed_when: false
+  delegate_to: "{{ cluster_seed_host }}"
+  register: pve_join_seed_version
+
+- name: Assert both nodes run the same Proxmox major.minor release
+  ansible.builtin.assert:
+    that:
+      - (pve_join_version.stdout | regex_search('pve-manager/([0-9]+\\.[0-9]+)', '\\1') | first)
+        == (pve_join_seed_version.stdout | regex_search('pve-manager/([0-9]+\\.[0-9]+)', '\\1') | first)
+    fail_msg: |
+      Version mismatch — a cluster must be built from identical releases.
+        {{ inventory_hostname }}: {{ pve_join_version.stdout }}
+        {{ cluster_seed_host }}:       {{ pve_join_seed_version.stdout }}
+
+- name: Assert the joining node runs the approved target release
+  ansible.builtin.assert:
+    that:
+      - pve_join_version.stdout is search('pve-manager/' ~ target_pve_major ~ '\\.')
+    fail_msg: "{{ inventory_hostname }} must run Proxmox VE {{ target_pve_release }} before joining."
+
+- name: List guests on the joining node
+  ansible.builtin.shell: |
+    set -o pipefail
+    find /etc/pve/qemu-server /etc/pve/lxc -maxdepth 1 -type f -name '*.conf' -print | wc -l
+  args:
+    executable: /bin/bash
+  changed_when: false
+  register: pve_join_guest_count
+
+- name: Assert the joining node has no guests at all
+  ansible.builtin.assert:
+    that:
+      - (pve_join_guest_count.stdout | trim | int) == 0
+    fail_msg: |
+      {{ inventory_hostname }} still has {{ pve_join_guest_count.stdout | trim }} guest
+      configuration(s). A node joining a cluster MUST be empty: `pvecm add`
+      overwrites /etc/pve, and guest IDs would collide.
+
+      List them with:  ssh {{ ssh_alias }} 'qm list; pct list'
+  when: pve_join_require_empty | bool
+
+- name: Assert the joining node is not already in a cluster
+  ansible.builtin.command: pvecm status
+  changed_when: false
+  failed_when: false
+  register: pve_join_existing_cluster
+
+- name: Verify the node is standalone before joining
+  ansible.builtin.assert:
+    that:
+      - "'Cluster information' not in pve_join_existing_cluster.stdout"
+    fail_msg: "{{ inventory_hostname }} already belongs to a cluster."
+  when: not (pve_join_executed | bool)
+
+- name: Verify the node belongs to the intended cluster after joining
+  ansible.builtin.assert:
+    that:
+      - "'Cluster information' in pve_join_existing_cluster.stdout"
+      - pve_join_existing_cluster.stdout is search('Name:\\s+' ~ cluster_name)
+    fail_msg: >-
+      {{ inventory_hostname }} does not report membership in the expected
+      '{{ cluster_name }}' cluster after the operator marked the join complete.
+  when: pve_join_executed | bool
+
+- name: Assert the hostname is the final intended one
+  ansible.builtin.command: hostname
+  changed_when: false
+  register: pve_join_hostname
+
+- name: Verify the hostname matches the inventory
+  ansible.builtin.assert:
+    that:
+      - pve_join_hostname.stdout | trim == expected_hostname
+    fail_msg: |
+      {{ inventory_hostname }} reports hostname '{{ pve_join_hostname.stdout | trim }}',
+      expected '{{ expected_hostname }}'. Renaming a node AFTER it joins is painful;
+      fix it now.
+
+- name: Check name resolution between the two nodes
+  ansible.builtin.command:
+    argv: [getent, hosts, "{{ item }}"]
+  changed_when: false
+  register: pve_join_resolution
+  loop: "{{ [expected_hostname, cluster_seed_host] }}"
+
+- name: Assert both node names resolve
+  ansible.builtin.assert:
+    that:
+      - item.rc == 0
+    fail_msg: "'{{ item.item }}' does not resolve on {{ inventory_hostname }}. Fix /etc/hosts first."
+  loop: "{{ pve_join_resolution.results }}"
+  loop_control:
+    label: "{{ item.item }}"
+
+- name: Assert clocks are synchronised
+  ansible.builtin.command: timedatectl show
+  changed_when: false
+  register: pve_join_time
+
+- name: Verify NTP synchronisation on the joining node
+  ansible.builtin.assert:
+    that:
+      - "'NTPSynchronized=yes' in pve_join_time.stdout"
+    fail_msg: "{{ inventory_hostname }} is not NTP-synchronised; corosync needs synchronised clocks."
+
+- name: Verify the seed's API port is reachable from the joining node
+  ansible.builtin.wait_for:
+    host: "{{ cluster_seed_ip }}"
+    port: 8006
+    timeout: 10
+    state: started
+
+- name: Verify SSH to the seed is reachable from the joining node
+  ansible.builtin.wait_for:
+    host: "{{ cluster_seed_ip }}"
+    port: 22
+    timeout: 10
+    state: started
+
+- name: Read the seed's cluster fingerprint for the join
+  ansible.builtin.command:
+    argv: [pvecm, status]
+  changed_when: false
+  delegate_to: "{{ cluster_seed_host }}"
+  register: pve_join_seed_status
+
+- name: Assert the seed is quorate before anything joins it
+  ansible.builtin.assert:
+    that:
+      - pve_join_seed_status.stdout is search('Quorate:\\s+Yes')
+    fail_msg: "The seed {{ cluster_seed_host }} is not quorate; fix that before adding nodes."
+
+- name: Show the proposed change
+  ansible.builtin.debug:
+    msg:
+      - "PROPOSED CHANGE:"
+      - "  {{ inventory_hostname }} ({{ ansible_host }}) will JOIN cluster '{{ cluster_name }}'"
+      - "  seed: {{ cluster_seed_host }} ({{ cluster_seed_ip }})"
+      - ""
+      - "  This OVERWRITES /etc/pve on {{ inventory_hostname }} and regenerates its"
+      - "  Proxmox X.509 node certificate. Its SSH host key normally remains unchanged."
+      - ""
+      - "  guests on the joining node: {{ pve_join_guest_count.stdout | trim }} (must be 0)"
+      - "  join method: {{ join_method }}"

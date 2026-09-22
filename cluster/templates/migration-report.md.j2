@@ -1,0 +1,78 @@
+# Migration report — cluster `{{ cluster_name }}`
+
+* Generated: {{ ansible_date_time.iso8601 }}
+* Controller: {{ lookup('env', 'USER') }}@{{ lookup('pipe', 'hostname') }}
+* Target release: Proxmox VE {{ target_pve_release }}
+
+## Cluster membership
+
+| node | ip | expected hostname | role |
+|---|---|---|---|
+{% for host in groups['proxmox'] %}
+| {{ hostvars[host].expected_hostname }} | {{ hostvars[host].ansible_host }} | {{ hostvars[host].expected_hostname }} | {{ 'seed' if hostvars[host].cluster_seed else 'member' }} |
+{% endfor %}
+
+## Validation results
+
+{% for host in report_hosts %}
+### {{ host }}
+
+```text
+{{ hostvars[host].validation_cluster_status.stdout | default('not collected') }}
+```
+
+Nodes:
+
+```text
+{{ hostvars[host].validation_nodes.stdout | default('not collected') }}
+```
+
+Storage:
+
+| storage | type | active | shared |
+|---|---|---|---|
+{% for s in (hostvars[host].validation_storage.stdout | default('[]') | from_json) %}
+| {{ s.storage }} | {{ s.type }} | {{ 'yes' if s.active else 'NO' }} | {{ 'yes' if s.shared else 'no' }} |
+{% endfor %}
+
+{% endfor %}
+
+## What this cluster does and does not give you
+
+| capability | status | why |
+|---|---|---|
+| Single management UI and API for three nodes | **yes** | that is what clustering provides |
+| Central user/permission and firewall configuration | **yes** | `/etc/pve` is replicated by pmxcfs |
+| Cold/offline migration between nodes | **yes** | over the cluster network |
+| Live migration between nodes | **only with shared storage** | guest disks live on node-local LVM/ZFS |
+| Automatic failover (HA) | **NO** | HA is deliberately not enabled: there is no shared guest storage, so HA would fence nodes without being able to restart the guests |
+| Backup redundancy | **NO** | the Synology is a single backup target and a single point of failure |
+
+### Explicit warnings
+
+1. **Clustering is not high availability.** Three nodes give quorum and one UI.
+   Nothing restarts a guest automatically when a node dies.
+2. **Local VM storage is not shared storage.** `local-lvm` on one node is invisible
+   to the others. Live migration and HA both require shared or replicated storage
+   (Ceph, ZFS replication, or an NFS/iSCSI datastore for guest disks).
+3. **Backup-only NFS provides no failover.** The Synology holds archives, not
+   running disks. If a node dies, recovery means "restore from backup", measured
+   in hours.
+4. **Rebuild security labs in isolation.** Metasploitable is not restored by this
+   migration. If recreated later, it must never be attached to a routed bridge.
+5. **The Synology is one dependency.** One NAS, one volume, one building. It is not
+   a 3-2-1 backup strategy — see the recommendation below.
+
+## Recommended next steps
+
+1. **Configure a scheduled backup job** on the cluster (Datacenter → Backup) writing
+   to `{{ nas_storage_id }}`. The migration deliberately leaves scheduling to you so
+   that no automatic job starts mid-migration.
+2. **Move toward 3-2-1**: three copies, two media types, one off-site. Today you have
+   one copy on one NAS.
+3. **Deploy Proxmox Backup Server.** PBS gives deduplication, incremental backups,
+   server-side verification jobs and remote sync to a second PBS — all of which this
+   NFS target cannot do. Point PBS's datastore at Volume 1 and sync it off-site.
+4. **Revisit Storage Pool 1.** It reports a health warning and Volume 2 has 0 bytes
+   free. That is a failure waiting to happen next to your only backup copy.
+5. **Decide about shared storage** if live migration or HA ever matters.

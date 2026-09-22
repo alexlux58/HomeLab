@@ -1,0 +1,53 @@
+---
+- name: Create NetBox application backup directories
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0750"
+  loop:
+    - "{{ netbox_backup_install_root }}"
+    - "{{ netbox_backup_staging_root }}"
+
+- name: Install the application-aware NetBox backup program
+  ansible.builtin.copy:
+    src: "{{ netbox_backup_assets_root }}/backup.py"
+    dest: "{{ netbox_backup_install_root }}/backup.py"
+    owner: root
+    group: root
+    mode: "0750"
+
+- name: Link the backup program to the path used by the unit
+  ansible.builtin.file:
+    src: "{{ netbox_backup_install_root }}/backup.py"
+    dest: /usr/local/sbin/netbox-app-backup
+    state: link
+    owner: root
+    group: root
+
+- name: Install NetBox backup systemd units
+  ansible.builtin.copy:
+    src: "{{ netbox_backup_assets_root }}/{{ item }}"
+    dest: "/etc/systemd/system/{{ item }}"
+    owner: root
+    group: root
+    mode: "0644"
+  loop:
+    - netbox-app-backup.service
+    - netbox-app-backup.timer
+  notify: Reload systemd
+
+- name: Flush backup unit handler before enabling timer
+  ansible.builtin.meta: flush_handlers
+
+- name: Enable the daily NetBox application backup timer
+  ansible.builtin.systemd_service:
+    name: netbox-app-backup.timer
+    enabled: true
+    state: started
+
+- name: Validate the NetBox application backup timer
+  ansible.builtin.command:
+    argv: [systemctl, is-enabled, netbox-app-backup.timer]
+  changed_when: false

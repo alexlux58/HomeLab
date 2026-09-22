@@ -1,0 +1,15 @@
+---
+- greeting:
+    text_size: xl
+    text: Homelab services
+- resources:
+    cpu: true
+    memory: true
+    disk: /
+    uptime: true
+- datetime:
+    text_size: md
+    format:
+      dateStyle: long
+      timeStyle: short
+      hourCycle: h12

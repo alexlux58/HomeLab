@@ -1,0 +1,33 @@
+---
+name: homelab-homepage
+
+services:
+  homepage:
+    image: ghcr.io/gethomepage/homepage:v1.13.2@sha256:c881120b024d6a8e2f3c9664efc568984e4352e47df459d6b32e225374c71955
+    container_name: homepage
+    restart: unless-stopped
+    environment:
+      HOMEPAGE_ALLOWED_HOSTS: home.lab.example.com,192.168.0.30
+      PUID: "1000"
+      PGID: "1000"
+    expose:
+      - "3000"
+    volumes:
+      - /srv/homelab/homepage/config:/app/config
+    networks:
+      homelab_proxy:
+        aliases:
+          - homepage
+    security_opt:
+      - no-new-privileges:true
+    mem_limit: 256m
+    mem_reservation: 96m
+    cpus: 0.5
+    pids_limit: 256
+    labels:
+      com.examplelab.homelab.role: dashboard
+      com.examplelab.homelab.state: /srv/homelab/homepage
+
+networks:
+  homelab_proxy:
+    external: true

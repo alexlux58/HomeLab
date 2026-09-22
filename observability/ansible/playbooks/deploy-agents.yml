@@ -1,0 +1,11 @@
+---
+- name: Deploy bounded Docker host telemetry agents
+  hosts: docker_hosts
+  become: true
+  gather_facts: true
+  serial: 1
+  any_errors_fatal: true
+  roles:
+    - role: node_exporter
+    - role: cadvisor
+    - role: alloy_agent

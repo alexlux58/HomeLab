@@ -1,0 +1,71 @@
+---
+host_config_backup_capture_root: "{{ remote_work_dir }}/host-config"
+# Copied verbatim. Everything here is configuration, not credentials.
+host_config_backup_paths:
+  - /etc/network/interfaces
+  - /etc/network/interfaces.d
+  - /etc/hosts
+  - /etc/hostname
+  - /etc/resolv.conf
+  - /etc/timezone
+  - /etc/fstab
+  - /etc/modules
+  - /etc/modprobe.d
+  - /etc/default/grub
+  - /etc/default/grub.d
+  - /etc/kernel/cmdline
+  - /etc/systemd/network
+  - /etc/pve/storage.cfg
+  - /etc/pve/datacenter.cfg
+  - /etc/pve/jobs.cfg
+  - /etc/pve/vzdump.cron
+  - /etc/pve/firewall
+  - /etc/pve/qemu-server
+  - /etc/pve/lxc
+  - /etc/pve/local/host.fw
+  - /var/lib/vz/snippets
+  - /etc/apt/sources.list
+  - /etc/apt/sources.list.d
+  - /etc/chrony/chrony.conf
+  - /etc/systemd/timesyncd.conf
+
+# NEVER copied. These are keys, secrets or things that must not be restored
+# onto a rebuilt host. The exclusion is enforced twice: tar excludes them, and a
+# post-capture scan fails the play if any key material slipped through.
+host_config_backup_exclude_patterns:
+  - "priv"
+  - "priv/*"
+  - "*.key"
+  - "*.pem"
+  - "*.pw"
+  - "id_rsa*"
+  - "id_ecdsa*"
+  - "id_ed25519*"
+  - "authorized_keys"
+  - "known_hosts"
+  - "shadow.cfg"
+  - "tfa.cfg"
+  - "authkey*"
+  - "*.secret"
+  - "pve-root-ca*"
+  - "*.token"
+
+host_config_backup_commands:
+  - {name: pveversion, argv: [pveversion, -v]}
+  - {name: qm-list, argv: [qm, list]}
+  - {name: pct-list, argv: [pct, list]}
+  - {name: pvesm-status, argv: [pvesm, status]}
+  - {name: ip-address, argv: [ip, -br, address]}
+  - {name: ip-route, argv: [ip, route]}
+  - {name: bridge-link, argv: [bridge, link]}
+  - {name: bridge-vlan, argv: [bridge, vlan, show]}
+  - {name: lsblk, argv: [lsblk, -o, "NAME,SIZE,TYPE,FSTYPE,MOUNTPOINT,MODEL,SERIAL"]}
+  - {name: lspci, argv: [lspci, -nnk]}
+  - {name: disk-by-id, argv: [ls, -l, /dev/disk/by-id]}
+  - {name: zpool-status, argv: [zpool, status]}
+  - {name: lvs, argv: [lvs, -a, -o, "+devices"]}
+  - {name: pvs, argv: [pvs]}
+  - {name: vgs, argv: [vgs]}
+  - {name: lsmod, argv: [lsmod]}
+  - {name: pvecm-status, argv: [pvecm, status]}
+  - {name: pvesh-nodes, argv: [pvesh, get, /nodes, --output-format, json]}

@@ -1,0 +1,8 @@
+---
+pve_restore_plan_path: "{{ artifacts_dir }}/restore-plan.json"
+pve_restore_timeout_seconds: 21600
+pve_restore_start_after: false
+pve_restore_require_source_powered_off: true
+# Used by the .13 test restore, which deliberately uses a throwaway VMID and a
+# freshly generated MAC so it cannot collide with anything real.
+pve_restore_test_mode: false

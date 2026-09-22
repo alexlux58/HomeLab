@@ -1,0 +1,27 @@
+---
+- name: Validate Home Lab services guest before application deployment
+  hosts: homelab_service_guests
+  gather_facts: true
+  become: true
+  serial: 1
+  any_errors_fatal: true
+
+  tasks:
+    - name: Require the expected guest identity and architecture
+      ansible.builtin.assert:
+        that:
+          - ansible_facts.hostname == expected_hostname
+          - ansible_facts.architecture == 'x86_64'
+          - ansible_facts.distribution == 'Ubuntu'
+          - ansible_facts.distribution_major_version == '24'
+
+    - name: Check Docker Compose availability
+      ansible.builtin.command:
+        argv: [docker, compose, version]
+      changed_when: false
+
+    - name: Check required filesystem headroom
+      ansible.builtin.assert:
+        that:
+          - ansible_facts.mounts | selectattr('mount', 'equalto', '/') | map(attribute='size_available') | first | int > 10737418240
+        fail_msg: "VM 300 requires at least 10 GiB free before application reconciliation."

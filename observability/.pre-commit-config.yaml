@@ -1,0 +1,14 @@
+---
+repos:
+  - repo: https://github.com/gitleaks/gitleaks
+    rev: v8.30.1
+    hooks:
+      - id: gitleaks
+        args: ["--redact"]
+  - repo: local
+    hooks:
+      - id: observability-offline-safety
+        name: observability offline safety checks
+        entry: python3 scripts/validate_repo.py
+        language: system
+        pass_filenames: false

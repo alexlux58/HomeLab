@@ -1,0 +1,8 @@
+---
+title: Home Lab
+theme: dark
+color: slate
+headerStyle: boxed
+hideVersion: true
+statusStyle: dot
+target: _self

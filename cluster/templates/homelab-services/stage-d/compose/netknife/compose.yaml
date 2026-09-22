@@ -1,0 +1,79 @@
+---
+name: homelab-netknife
+
+services:
+  netknife-api:
+    image: homelab/netknife-api:28ef127baeab
+    build:
+      context: /opt/homelab/apps/netknife
+      dockerfile: deploy/docker/Dockerfile.api
+    pull_policy: never
+    container_name: netknife-api
+    restart: unless-stopped
+    env_file:
+      - /etc/homelab/secret-store/netknife.env
+    expose:
+      - "3001"
+    networks:
+      netknife_backend:
+        aliases:
+          - netknife-api
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m,mode=1777
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    mem_limit: 1024m
+    mem_reservation: 256m
+    cpus: 1.5
+    pids_limit: 256
+    labels:
+      com.examplelab.homelab.role: netknife-api
+      com.examplelab.homelab.source-sha256: 28ef127baeabe0ef6a6b8bcfc0fa521cee558c29dd97af9aea72f99809129e4b
+      com.examplelab.homelab.state: memory-only
+
+  netknife-web:
+    image: homelab/netknife-web:28ef127baeab
+    build:
+      context: /opt/homelab/apps/netknife
+      dockerfile: deploy/docker/Dockerfile.web
+    pull_policy: never
+    container_name: netknife-web
+    restart: unless-stopped
+    depends_on:
+      netknife-api:
+        condition: service_healthy
+    expose:
+      - "8080"
+    networks:
+      homelab_proxy:
+        aliases:
+          - netknife-web
+      netknife_backend:
+        aliases:
+          - netknife-web
+    read_only: true
+    tmpfs:
+      - /tmp:size=16m,mode=1777
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    mem_limit: 64m
+    mem_reservation: 16m
+    cpus: 0.5
+    pids_limit: 64
+    labels:
+      com.examplelab.homelab.role: netknife-web
+      com.examplelab.homelab.source-sha256: 28ef127baeabe0ef6a6b8bcfc0fa521cee558c29dd97af9aea72f99809129e4b
+      com.examplelab.homelab.state: none
+
+networks:
+  homelab_proxy:
+    external: true
+  netknife_backend:
+    driver: bridge
+    labels:
+      com.examplelab.homelab.role: netknife-private

@@ -1,0 +1,162 @@
+---
+# Rendered by roles/netbox_app. Do not edit on the guest; edit the template.
+#
+# Two Redis instances are required, not one: NetBox uses a volatile cache and a
+# durable RQ task queue with different eviction semantics. Sharing one instance
+# silently drops queued jobs when the cache evicts.
+name: netbox
+
+networks:
+  netbox_internal:
+    driver: bridge
+
+services:
+  postgres:
+    image: {{ netbox_app_postgres_image }}
+    container_name: netbox-postgres
+    restart: unless-stopped
+    networks: [netbox_internal]
+    env_file:
+      - {{ netbox_app_secrets_root }}/netbox-postgres.env
+    volumes:
+      - {{ netbox_app_state_root }}/postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U netbox -d netbox"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 60s
+    deploy:
+      resources:
+        limits:
+          memory: 768m
+    logging:
+      driver: json-file
+      options: {max-size: 10m, max-file: "3"}
+
+  redis-cache:
+    image: {{ netbox_app_redis_image }}
+    container_name: netbox-redis-cache
+    restart: unless-stopped
+    networks: [netbox_internal]
+    command: ["redis-server", "--maxmemory", "96mb", "--maxmemory-policy", "allkeys-lru", "--save", ""]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+    deploy:
+      resources:
+        limits:
+          memory: 96m
+    logging:
+      driver: json-file
+      options: {max-size: 10m, max-file: "3"}
+
+  redis-tasks:
+    image: {{ netbox_app_redis_image }}
+    container_name: netbox-redis-tasks
+    restart: unless-stopped
+    networks: [netbox_internal]
+    # noeviction plus an on-disk snapshot: queued jobs must survive a restart.
+    command: ["redis-server", "--maxmemory", "96mb", "--maxmemory-policy", "noeviction", "--appendonly", "yes"]
+    volumes:
+      - {{ netbox_app_state_root }}/redis-tasks:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+    deploy:
+      resources:
+        limits:
+          memory: 96m
+    logging:
+      driver: json-file
+      options: {max-size: 10m, max-file: "3"}
+
+  netbox:
+    image: {{ netbox_app_image }}
+    container_name: netbox
+    restart: unless-stopped
+    depends_on:
+      postgres: {condition: service_healthy}
+      redis-cache: {condition: service_healthy}
+      redis-tasks: {condition: service_healthy}
+    networks: [netbox_internal]
+    env_file:
+      - {{ netbox_app_secrets_root }}/netbox.env
+    environment:
+      WEB_CONCURRENCY: "2"
+    volumes:
+      - {{ netbox_app_state_root }}/media:/opt/netbox/netbox/media
+      - {{ netbox_app_state_root }}/reports:/opt/netbox/netbox/reports
+      - {{ netbox_app_state_root }}/scripts:/opt/netbox/netbox/scripts
+    # NetBox is on its own VM, so NPM on VM 300 reaches it across the LAN
+    # rather than over a shared Docker bridge. UFW admits port 8000 only from
+    # 192.168.0.30; nothing else on the network may reach it directly.
+    ports:
+      - "{{ netbox_app_bind_address }}:8000:8080"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/login/"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 180s
+    deploy:
+      resources:
+        limits:
+          memory: 1024m
+    logging:
+      driver: json-file
+      options: {max-size: 10m, max-file: "3"}
+
+  netbox-worker:
+    image: {{ netbox_app_image }}
+    container_name: netbox-worker
+    restart: unless-stopped
+    depends_on:
+      netbox: {condition: service_healthy}
+    networks: [netbox_internal]
+    env_file:
+      - {{ netbox_app_secrets_root }}/netbox.env
+    command: ["/opt/netbox/venv/bin/python", "/opt/netbox/netbox/manage.py", "rqworker"]
+    volumes:
+      - {{ netbox_app_state_root }}/media:/opt/netbox/netbox/media
+      - {{ netbox_app_state_root }}/reports:/opt/netbox/netbox/reports
+      - {{ netbox_app_state_root }}/scripts:/opt/netbox/netbox/scripts
+    deploy:
+      resources:
+        limits:
+          memory: 320m
+    logging:
+      driver: json-file
+      options: {max-size: 10m, max-file: "3"}
+
+  netbox-housekeeping:
+    image: {{ netbox_app_image }}
+    container_name: netbox-housekeeping
+    restart: unless-stopped
+    depends_on:
+      netbox: {condition: service_healthy}
+    networks: [netbox_internal]
+    env_file:
+      - {{ netbox_app_secrets_root }}/netbox.env
+    # The image no longer ships /opt/netbox/housekeeping.sh; only the
+    # manage.py housekeeping command exists. Run the upstream loop directly so
+    # a moved wrapper script cannot restart-loop this container.
+    command:
+      - /bin/bash
+      - -c
+      - |
+        while true; do
+          /opt/netbox/venv/bin/python /opt/netbox/netbox/manage.py housekeeping
+          sleep "${HOUSEKEEPING_INTERVAL:-86400}"
+        done
+    deploy:
+      resources:
+        limits:
+          memory: 160m
+    logging:
+      driver: json-file
+      options: {max-size: 10m, max-file: "3"}

@@ -1,0 +1,8 @@
+---
+- name: Run the Synology NFS preflight checks
+  ansible.builtin.include_tasks: preflight.yml
+  when: synology_nfs_action == 'preflight'
+
+- name: Register the Synology NFS storage in Proxmox
+  ansible.builtin.include_tasks: configure.yml
+  when: synology_nfs_action == 'configure'

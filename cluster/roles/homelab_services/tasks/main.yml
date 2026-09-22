@@ -1,0 +1,199 @@
+---
+- name: Validate requested Home Lab service
+  ansible.builtin.assert:
+    that:
+      - homelab_services_service_name in homelab_services_valid_services
+    fail_msg: >-
+      Set homelab_services_service_name to exactly one reviewed service. Aggregate
+      deployment is intentionally unsupported.
+
+- name: Check Docker Compose availability
+  ansible.builtin.command:
+    argv:
+      - docker
+      - compose
+      - version
+  register: homelab_services_compose_version
+  changed_when: false
+
+- name: Check required runtime secret files
+  ansible.builtin.stat:
+    path: "{{ homelab_services_secrets_root }}/{{ item }}"
+  loop: "{{ homelab_services_required_secrets.get(homelab_services_service_name, []) }}"
+  register: homelab_services_secret_stats
+  no_log: true
+
+- name: Require protected runtime secret files
+  ansible.builtin.assert:
+    that:
+      - item.stat.exists
+      - item.stat.isreg
+      - item.stat.mode in ['0400', '0600']
+      - item.stat.size | int > 0
+    fail_msg: >-
+      A required root-owned runtime secret is absent, empty, or not mode 0400/0600.
+      Install it locally before deploying this service.
+  loop: "{{ homelab_services_secret_stats.results }}"
+  no_log: true
+
+- name: Create selected service Compose directory
+  ansible.builtin.file:
+    path: "{{ homelab_services_compose_root }}/{{ homelab_services_service_name }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Create selected service state directories
+  ansible.builtin.file:
+    path: "{{ homelab_services_state_root }}/{{ item.path }}"
+    state: directory
+    owner: "{{ item.owner }}"
+    group: "{{ item.group }}"
+    mode: "0750"
+  loop: "{{ homelab_services_state_directories[homelab_services_service_name] }}"
+  loop_control:
+    label: "{{ item.path }}"
+
+- name: Install selected service Compose definition
+  ansible.builtin.copy:
+    src: >-
+      {{ homelab_services_assets_root }}/compose/{{ homelab_services_service_name }}/compose.yaml
+    dest: "{{ homelab_services_compose_root }}/{{ homelab_services_service_name }}/compose.yaml"
+    owner: root
+    group: root
+    mode: "0644"
+  register: homelab_services_compose_definition
+
+- name: Install Homepage configuration
+  ansible.builtin.copy:
+    src: "{{ homelab_services_assets_root }}/config/homepage/"
+    dest: "{{ homelab_services_state_root }}/homepage/config/"
+    owner: "1000"
+    group: "1000"
+    mode: preserve
+  when: homelab_services_service_name == 'homepage'
+  register: homelab_services_homepage_config
+
+- name: Create Nginx Proxy Manager custom configuration directory
+  ansible.builtin.file:
+    path: "{{ homelab_services_state_root }}/npm/data/nginx/custom"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  when: homelab_services_service_name == 'npm'
+
+- name: Require explicit Nginx Proxy Manager route-ownership transfer
+  ansible.builtin.assert:
+    that:
+      - homelab_services_allow_npm_route_ownership | bool
+      - homelab_services_npm_route_confirmation == homelab_services_npm_route_confirmation_expected
+    fail_msg: >-
+      Disable duplicate UI-managed proxy hosts, then explicitly approve transfer
+      to the declarative custom route file with the documented confirmation.
+  when: homelab_services_service_name == 'npm'
+
+- name: Install declarative Home Lab proxy routes
+  ansible.builtin.copy:
+    src: "{{ homelab_services_assets_root }}/config/npm/http.conf"
+    dest: "{{ homelab_services_state_root }}/npm/data/nginx/custom/http.conf"
+    owner: root
+    group: root
+    mode: "0644"
+  when: homelab_services_service_name == 'npm'
+  register: homelab_services_npm_config
+  notify: Reload Nginx Proxy Manager
+
+- name: Require a controller NetKnife source for first deployment
+  ansible.builtin.assert:
+    that:
+      - homelab_services_controller_netknife_source | length > 0
+    fail_msg: >-
+      Set homelab_services_controller_netknife_source to the reviewed NetKnife-App
+      checkout when deploying NetKnife.
+  when: homelab_services_service_name == 'netknife'
+
+- name: Install reviewed NetKnife application source
+  ansible.builtin.copy:
+    src: "{{ homelab_services_controller_netknife_source }}/"
+    dest: "{{ homelab_services_netknife_source }}/"
+    owner: labuser
+    group: labuser
+    mode: preserve
+  when: homelab_services_service_name == 'netknife'
+  register: homelab_services_netknife_source_copy
+
+- name: Install reviewed NetKnife container proxy configuration
+  ansible.builtin.copy:
+    src: "{{ homelab_services_assets_root }}/config/netknife/docker.conf"
+    dest: "{{ homelab_services_netknife_source }}/deploy/nginx/docker.conf"
+    owner: labuser
+    group: labuser
+    mode: "0644"
+  when: homelab_services_service_name == 'netknife'
+  register: homelab_services_netknife_config
+
+- name: Check shared Home Lab proxy network
+  ansible.builtin.command:
+    argv: [docker, network, inspect, homelab_proxy]
+  register: homelab_services_proxy_network
+  changed_when: false
+  failed_when: homelab_services_proxy_network.rc not in [0, 1]
+
+- name: Create shared Home Lab proxy network
+  ansible.builtin.command:
+    argv: [docker, network, create, homelab_proxy]
+  when: homelab_services_proxy_network.rc == 1
+  changed_when: true
+
+- name: Validate selected Compose model
+  ansible.builtin.command:
+    argv:
+      - docker
+      - compose
+      - --project-directory
+      - "{{ homelab_services_compose_root }}/{{ homelab_services_service_name }}"
+      - config
+      - --quiet
+  changed_when: false
+
+- name: Deploy selected Home Lab service
+  ansible.builtin.command:
+    argv: >-
+      {{
+        [
+          'docker', 'compose', '--project-directory',
+          homelab_services_compose_root ~ '/' ~ homelab_services_service_name,
+          'up', '--detach', '--wait', '--wait-timeout', '300'
+        ]
+        + (
+          ['--build', '--pull', 'never']
+          if homelab_services_service_name == 'netknife'
+          else ['--pull', 'always']
+        )
+      }}
+  register: homelab_services_deploy
+  changed_when: >-
+    'Created' in (homelab_services_deploy.stdout ~ homelab_services_deploy.stderr)
+    or 'Recreated' in (homelab_services_deploy.stdout ~ homelab_services_deploy.stderr)
+    or 'Started' in (homelab_services_deploy.stdout ~ homelab_services_deploy.stderr)
+
+- name: Read selected Compose service state
+  ansible.builtin.command:
+    argv:
+      - docker
+      - compose
+      - --project-directory
+      - "{{ homelab_services_compose_root }}/{{ homelab_services_service_name }}"
+      - ps
+      - --format
+      - json
+  register: homelab_services_compose_state
+  changed_when: false
+
+- name: Require a running selected Compose project
+  ansible.builtin.assert:
+    that:
+      - homelab_services_compose_state.stdout | trim | length > 0
+    fail_msg: "The selected Compose project did not report any running containers."

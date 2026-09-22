@@ -1,0 +1,75 @@
+---
+# Stage 1 — Synology NFS preflight from all three hosts.
+#
+#   make nas-preflight
+#   make nas-preflight EXTRA="-e allow_configure_nfs_storage=true"   # also add the PVE storage
+#
+# Mounts the export transiently, writes/reads/removes ONE uniquely named test
+# file, and unmounts. The Synology's own configuration is never modified.
+- name: Validate the Synology NFS backup target
+  hosts: proxmox
+  gather_facts: true
+  serial: 1
+  any_errors_fatal: true
+  tags: [stage1, nas]
+
+  roles:
+    - role: synology_nfs
+      synology_nfs_action: preflight
+
+    - role: synology_nfs
+      synology_nfs_action: configure
+      when: allow_configure_nfs_storage | bool
+
+- name: Recompute the capacity verdict with real NAS figures
+  hosts: localhost
+  gather_facts: false
+  connection: local
+  become: false
+  any_errors_fatal: true
+  tags: [stage1, nas]
+
+  tasks:
+    - name: Assert discovery has been run
+      ansible.builtin.stat:
+        path: "{{ artifacts_dir }}/discovery.json"
+      register: nas_discovery
+
+    - name: Require discovery first
+      ansible.builtin.assert:
+        that:
+          - nas_discovery.stat.exists
+        fail_msg: "Run `make discover` before the NAS preflight."
+
+    - name: Recalculate capacity against the measured NAS free space
+      ansible.builtin.command:
+        argv:
+          - "{{ project_root }}/.venv/bin/python"
+          - "{{ scripts_dir }}/calculate_backup_capacity.py"
+          - --discovery
+          - "{{ artifacts_dir }}/discovery.json"
+          - --protected
+          - "{{ artifacts_dir }}/protected-guests.json"
+          - --out
+          - "{{ artifacts_dir }}/storage-capacity.json"
+          - --margin-pct
+          - "{{ backup_capacity_margin_pct }}"
+          - --compression-ratio
+          - "{{ backup_compression_ratio_assumption }}"
+          - --min-free-gib
+          - "{{ nas_min_free_gib }}"
+          - --nas-free-bytes
+          - "{{ hostvars[cluster_seed_host].synology_nfs_capacity.avail_bytes }}"
+          - --nas-total-bytes
+          - "{{ hostvars[cluster_seed_host].synology_nfs_capacity.total_bytes }}"
+          - --nas-mount-source
+          - "{{ hostvars[cluster_seed_host].synology_nfs_mount_info.source }}"
+          - --forbidden-prefix
+          - /volume2
+          - --required-prefix
+          - "{{ nas_required_volume_prefix }}"
+      changed_when: true
+
+    - name: Show the capacity verdict
+      ansible.builtin.debug:
+        msg: "{{ (lookup('file', artifacts_dir ~ '/storage-capacity.json') | from_json).totals }}"

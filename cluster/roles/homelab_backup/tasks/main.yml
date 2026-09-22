@@ -1,0 +1,45 @@
+---
+- name: Create Home Lab application backup directories
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0750"
+  loop:
+    - "{{ homelab_backup_install_root }}"
+    - "{{ homelab_backup_staging_root }}"
+
+- name: Install application-aware backup program
+  ansible.builtin.copy:
+    src: "{{ homelab_backup_assets_root }}/backup.py"
+    dest: "{{ homelab_backup_install_root }}/backup.py"
+    owner: root
+    group: root
+    mode: "0750"
+
+- name: Install application backup systemd units
+  ansible.builtin.copy:
+    src: "{{ homelab_backup_assets_root }}/{{ item }}"
+    dest: "/etc/systemd/system/{{ item }}"
+    owner: root
+    group: root
+    mode: "0644"
+  loop:
+    - homelab-app-backup.service
+    - homelab-app-backup.timer
+  notify: Reload systemd
+
+- name: Flush backup unit handler before enabling timer
+  ansible.builtin.meta: flush_handlers
+
+- name: Enable daily Home Lab application backup timer
+  ansible.builtin.systemd_service:
+    name: homelab-app-backup.timer
+    enabled: true
+    state: started
+
+- name: Validate Home Lab application backup timer
+  ansible.builtin.command:
+    argv: [systemctl, is-enabled, homelab-app-backup.timer]
+  changed_when: false

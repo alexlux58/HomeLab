@@ -1,0 +1,25 @@
+---
+# VM 330 exists on pve3 and is protected with onboot=0 until the backup
+# and isolated-restore gates pass. Its ED25519 host key
+# SHA256:EXAMPLE_FINGERPRINT_REDACTED is pinned in the operator's
+# known_hosts; it was never auto-accepted.
+all:
+  children:
+    netbox_guests:
+      hosts:
+        netbox:
+          ansible_host: 192.168.0.50
+          ansible_user: netbox-admin
+          ansible_ssh_private_key_file: ~/.ssh/homelab_netbox_ed25519
+          ansible_python_interpreter: /usr/bin/python3
+          expected_hostname: netbox
+          ansible_ssh_common_args: >-
+            -o IdentitiesOnly=yes
+            -o IdentityAgent=none
+            -o StrictHostKeyChecking=yes
+      vars:
+        # The shared guest base role defaults to the VM 300/310 account name.
+        # sshd AllowUsers must name this guest's own administrator or the SSH
+        # restart at the end of the role locks the guest out.
+        homelab_guest_base_ssh_allow_users:
+          - netbox-admin

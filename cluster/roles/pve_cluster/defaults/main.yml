@@ -1,0 +1,3 @@
+---
+pve_cluster_link0_address: "{{ cluster_seed_ip }}"
+pve_cluster_post_wait_seconds: 30

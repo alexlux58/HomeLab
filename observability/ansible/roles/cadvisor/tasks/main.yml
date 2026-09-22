@@ -1,0 +1,31 @@
+---
+- name: Create cAdvisor deployment directory
+  ansible.builtin.file:
+    path: /opt/exporters/cadvisor
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Install bounded cAdvisor Compose model
+  ansible.builtin.template:
+    src: compose.yml.j2
+    dest: /opt/exporters/cadvisor/compose.yml
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Deploy cAdvisor
+  community.docker.docker_compose_v2:
+    project_src: /opt/exporters/cadvisor
+    state: present
+    wait: true
+    wait_timeout: 120
+
+- name: Allow cAdvisor only from observability
+  community.general.ufw:
+    rule: allow
+    proto: tcp
+    src: "{{ firewall_observability_ip }}"
+    port: "8080"
+    comment: Prometheus cAdvisor

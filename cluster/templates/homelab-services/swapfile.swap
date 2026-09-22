@@ -1,0 +1,9 @@
+[Unit]
+Description=Homelab emergency swap file
+After=local-fs.target
+
+[Swap]
+What=/swapfile
+
+[Install]
+WantedBy=swap.target

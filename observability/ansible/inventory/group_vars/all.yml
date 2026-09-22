@@ -1,0 +1,76 @@
+---
+common_timezone: America/Los_Angeles
+common_admin_user: labuser
+common_packages:
+  - ca-certificates
+  - curl
+  - gnupg
+  - jq
+  - qemu-guest-agent
+  - sqlite3
+  - unattended-upgrades
+  - ufw
+  - zstd
+common_journald_system_max_use: 256M
+common_swap_size_mb: 2048
+common_ssh_client_alive_interval: 300
+common_ssh_client_alive_count_max: 2
+
+docker_daemon_config:
+  log-driver: json-file
+  log-opts:
+    max-size: 10m
+    max-file: "3"
+  live-restore: true
+  storage-driver: overlay2
+
+observability_stack_root: /opt/observability
+observability_stack_data_root: /srv/observability
+observability_stack_secrets_root: /etc/observability/secret-store
+observability_stack_required_secrets:
+  - grafana_admin_password
+  - smtp_password
+  - pve.yml
+  - snmp.yml
+observability_stack_minimum_secret_bytes:
+  grafana_admin_password: 20
+  smtp_password: 8
+  pve.yml: 80
+  snmp.yml: 1024
+observability_stack_expected_services:
+  - alertmanager
+  - alloy
+  - blackbox-exporter
+  - cadvisor
+  - grafana
+  - loki
+  - node-exporter
+  - prometheus
+  - pve-exporter
+  - snmp-exporter
+observability_stack_required_up_jobs:
+  - observability-containers
+  - observability-node
+  - prometheus
+  - pve
+  - synology-snmp
+
+allow_observability_dashboard_update: false
+observability_dashboard_update_confirmation: ""
+observability_dashboard_update_required_confirmation: >-
+  UPDATE HOME LAB OBSERVABILITY DASHBOARDS
+
+firewall_lan_cidr: 192.168.0.0/24
+firewall_observability_ip: 192.168.0.31
+firewall_services_ip: 192.168.0.30
+
+node_exporter_image: prom/node-exporter:v1.12.1
+node_exporter_listen_ip: "{{ ansible_host }}"
+cadvisor_image: ghcr.io/google/cadvisor:v0.60.5
+cadvisor_listen_ip: "{{ ansible_host }}"
+alloy_agent_image: grafana/alloy:v1.18.0
+alloy_agent_destination: http://192.168.0.31:3100/loki/api/v1/push
+
+backup_root: /srv/observability/backups
+backup_schedule: "*-*-* 03:30:00"
+backup_randomized_delay: 10m

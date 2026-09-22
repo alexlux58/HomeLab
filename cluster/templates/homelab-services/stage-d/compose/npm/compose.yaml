@@ -1,0 +1,41 @@
+---
+name: homelab-npm
+
+services:
+  npm:
+    image: jc21/nginx-proxy-manager:2.15.1@sha256:99a885f56ca2203a2eb352a5f9e2cd5c1e25786508debd725ad48ebe955d114f
+    container_name: npm
+    restart: unless-stopped
+    environment:
+      DB_SQLITE_FILE: /data/database.sqlite
+      DISABLE_IPV6: "true"
+    ports:
+      - "192.168.0.30:80:80"
+      - "127.0.0.1:81:81"
+      - "192.168.0.30:443:443"
+    volumes:
+      - /srv/homelab/npm/data:/data
+      - /srv/homelab/npm/letsencrypt:/etc/letsencrypt
+    networks:
+      homelab_proxy:
+        aliases:
+          - npm
+    healthcheck:
+      test:
+        - CMD
+        - /usr/bin/check-health
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 90s
+    mem_limit: 512m
+    mem_reservation: 192m
+    cpus: 1.0
+    pids_limit: 512
+    labels:
+      com.examplelab.homelab.role: reverse-proxy
+      com.examplelab.homelab.state: /srv/homelab/npm
+
+networks:
+  homelab_proxy:
+    external: true

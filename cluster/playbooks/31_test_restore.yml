@@ -1,0 +1,238 @@
+---
+# Stage 5b — restore ONE representative .12 archive onto .13.
+#
+#   make test-restore
+#
+# This is the only proof that the archives are actually restorable on the target
+# release. .12 must not be destroyed until this passes.
+- name: Test-restore a .12 archive on the PVE 9 node
+  hosts: pve
+  gather_facts: true
+  serial: 1
+  any_errors_fatal: true
+  tags: [stage5, testrestore]
+
+  vars:
+    test_restore_conf: "/etc/pve/qemu-server/{{ test_restore_target_vmid }}.conf"
+
+  tasks:
+    - name: Require the destructive opt-in tag
+      ansible.builtin.assert:
+        that:
+          - "'destructive' in ansible_run_tags or 'never' in ansible_run_tags"
+        fail_msg: |
+          The restore task in this play is tagged `never,destructive`. Re-run with:
+            --tags all,destructive
+          (`make test-restore` already passes this).
+
+    - name: Load the verified backup manifest
+      ansible.builtin.set_fact:
+        test_restore_manifest: "{{ lookup('file', artifacts_dir ~ '/backup-manifest.json') | from_json }}"
+
+    - name: Select the representative archive
+      ansible.builtin.set_fact:
+        test_restore_entry: >-
+          {{ (test_restore_manifest.archives
+              | selectattr('source_hostname', 'equalto', hostvars[test_restore_source_host].expected_hostname)
+              | selectattr('original_vmid', 'equalto', test_restore_source_vmid | int)
+              | selectattr('verification.ok')
+              | sort(attribute='timestamp') | list | last) }}
+
+    - name: Show what will be restored
+      ansible.builtin.debug:
+        msg:
+          - "TEST RESTORE on {{ inventory_hostname }} (disposable node):"
+          - "  archive:     {{ test_restore_entry.archive_path }}"
+          - "  source:      {{ test_restore_entry.source_hostname }} VMID {{ test_restore_entry.original_vmid }} ({{ test_restore_entry.guest_name }})"
+          - "  target VMID: {{ test_restore_target_vmid }} (temporary, throwaway)"
+          - "  MAC:         regenerated via --unique"
+          - "  NIC:         left DISCONNECTED (link_down=1)"
+          - "  auto-start:  NO"
+
+    - name: Assert the temporary VMID is free
+      ansible.builtin.stat:
+        path: "{{ test_restore_conf }}"
+      register: test_restore_existing
+
+    - name: Refuse to overwrite an existing guest
+      ansible.builtin.assert:
+        that:
+          - not test_restore_existing.stat.exists
+        fail_msg: "VMID {{ test_restore_target_vmid }} already exists on .13. Choose another test VMID."
+
+    - name: Re-verify the archive checksum on this node
+      ansible.builtin.shell: |
+        set -o pipefail
+        set -eu
+        sha256sum {{ test_restore_entry.archive_path | quote }} | awk '{print $1}'
+      args:
+        executable: /bin/bash
+      changed_when: false
+      register: test_restore_sha
+
+    - name: Assert the checksum matches the manifest
+      ansible.builtin.assert:
+        that:
+          - test_restore_sha.stdout | trim == test_restore_entry.sha256
+        fail_msg: "Archive checksum mismatch — do not restore from it."
+
+    - name: Restore the archive under the temporary VMID with a fresh MAC
+      ansible.builtin.command:
+        argv:
+          - qmrestore
+          - "{{ test_restore_entry.archive_path }}"
+          - "{{ test_restore_target_vmid }}"
+          - --storage
+          - "{{ test_restore_target_storage }}"
+          - --unique
+      changed_when: true
+      async: "{{ pve_restore_timeout_seconds | default(21600) }}"
+      poll: 30
+      tags: [never, destructive]
+
+    - name: Read the restored configuration
+      ansible.builtin.command:
+        argv: [qm, config, "{{ test_restore_target_vmid }}"]
+      changed_when: false
+      register: test_restore_config
+
+    - name: Disconnect every NIC before the guest is ever powered on
+      ansible.builtin.command:
+        argv:
+          - qm
+          - set
+          - "{{ test_restore_target_vmid }}"
+          - "--{{ item.split(':')[0] }}"
+          - "{{ item.split(': ')[1] }},link_down=1"
+      changed_when: true
+      loop: "{{ test_restore_config.stdout_lines | select('match', '^net[0-9]+:') | list }}"
+      loop_control:
+        label: "{{ item.split(':')[0] }}"
+      when: "'link_down=1' not in item"
+
+    - name: Re-read the configuration and confirm isolation
+      ansible.builtin.command:
+        argv: [qm, config, "{{ test_restore_target_vmid }}"]
+      changed_when: false
+      register: test_restore_config_after
+
+    - name: Assert every NIC is disconnected
+      ansible.builtin.assert:
+        that:
+          - (test_restore_config_after.stdout_lines | select('match', '^net[0-9]+:') | select('search', 'link_down=1') | list | length)
+            == (test_restore_config_after.stdout_lines | select('match', '^net[0-9]+:') | list | length)
+        fail_msg: "The test guest is not isolated. It must not touch the network."
+
+    - name: Verify the restored disks exist on the destination storage
+      ansible.builtin.command:
+        argv:
+          - pvesh
+          - get
+          - "/nodes/{{ expected_hostname }}/storage/{{ test_restore_target_storage }}/content"
+          - --vmid
+          - "{{ test_restore_target_vmid }}"
+          - --output-format
+          - json
+      changed_when: false
+      register: test_restore_volumes
+
+    - name: Assert the disks were actually created
+      ansible.builtin.assert:
+        that:
+          - (test_restore_volumes.stdout | from_json | length) > 0
+        fail_msg: "No volumes were created for VMID {{ test_restore_target_vmid }}."
+
+    - name: Print the manual validation checklist
+      ansible.builtin.debug:
+        msg: |
+
+          ===================================================================
+          MANUAL VALIDATION — do this at the Proxmox console, not over SSH
+          ===================================================================
+
+          The guest is restored, isolated and STOPPED. Validate it yourself:
+
+            1. Open the console:      https://192.168.0.13:8006 -> VM {{ test_restore_target_vmid }} -> Console
+            2. Start it:              qm start {{ test_restore_target_vmid }}
+            3. Confirm:
+               - the bootloader appears and the OS boots
+               - all expected disks are detected
+               - filesystems mount without errors (no fsck loop)
+               - the configuration inside the guest is intact
+               - if the QEMU guest agent is installed:
+                     qm agent {{ test_restore_target_vmid }} ping
+            4. Shut it down:          qm shutdown {{ test_restore_target_vmid }}
+
+          The NIC is disconnected, so the guest has no network. That is deliberate:
+          this is a clone of a production guest and must not appear twice on the LAN.
+
+          Volumes created:
+          {{ test_restore_volumes.stdout | from_json | map(attribute='volid') | list }}
+
+          When you are satisfied, delete the test guest (separate approval):
+
+            make test-restore EXTRA="-e allow_delete_test_restore=true \
+              -e delete_test_restore_confirmation='DELETE TEST RESTORE {{ test_restore_target_vmid }} ON {{ expected_hostname }}'"
+          ===================================================================
+
+    - name: Delete the test guest
+      when:
+        - allow_delete_test_restore | bool
+        - delete_test_restore_confirmation == 'DELETE TEST RESTORE ' ~ test_restore_target_vmid ~ ' ON ' ~ expected_hostname
+      tags: [never, destructive]
+      block:
+        - name: Ensure the test guest is stopped before deletion
+          ansible.builtin.command:
+            argv: [qm, status, "{{ test_restore_target_vmid }}"]
+          changed_when: false
+          register: test_restore_final_status
+
+        - name: Assert it is stopped
+          ansible.builtin.assert:
+            that:
+              - "'stopped' in test_restore_final_status.stdout"
+            fail_msg: "Shut the test guest down before deleting it."
+
+        - name: Destroy the temporary test guest
+          ansible.builtin.command:
+            argv: [qm, destroy, "{{ test_restore_target_vmid }}", --purge, "1", --destroy-unreferenced-disks, "1"]
+          changed_when: true
+
+        - name: Confirm .13 has no remaining guests
+          ansible.builtin.shell: |
+            set -o pipefail
+            find /etc/pve/qemu-server /etc/pve/lxc -maxdepth 1 -type f -name '*.conf' -print | wc -l
+          args:
+            executable: /bin/bash
+          changed_when: false
+          register: test_restore_remaining
+
+        - name: Assert .13 is empty again
+          ansible.builtin.assert:
+            that:
+              - (test_restore_remaining.stdout | trim | int) == 0
+            fail_msg: ".13 still has guests; it cannot join the cluster until it is empty."
+            success_msg: ".13 is empty and ready to join the cluster."
+
+    - name: Record that the test restore succeeded
+      ansible.builtin.copy:
+        dest: "{{ artifacts_dir }}/test-restore-result.json"
+        mode: "0644"
+        content: |
+          {{ {
+               'tested_at': ansible_date_time.iso8601,
+               'target_node': expected_hostname,
+               'target_release': target_pve_release,
+               'source_host': test_restore_entry.source_hostname,
+               'source_vmid': test_restore_entry.original_vmid,
+               'guest_name': test_restore_entry.guest_name,
+               'archive': test_restore_entry.archive_path,
+               'sha256': test_restore_entry.sha256,
+               'temporary_vmid': test_restore_target_vmid,
+               'nic_isolated': true,
+               'volumes': test_restore_volumes.stdout | from_json | map(attribute='volid') | list,
+               'deleted': allow_delete_test_restore | bool,
+               'manual_boot_validation': 'performed by the operator at the console'
+             } | to_nice_json }}
+      delegate_to: localhost
+      become: false

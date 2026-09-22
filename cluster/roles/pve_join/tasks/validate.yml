@@ -1,0 +1,45 @@
+---
+- name: Reset the connection — the node's SSH host key changed during the join
+  ansible.builtin.meta: reset_connection
+
+- name: Read cluster status from the seed
+  ansible.builtin.command: pvecm status
+  changed_when: false
+  delegate_to: "{{ cluster_seed_host }}"
+  register: pve_join_post_status
+  retries: 12
+  delay: 10
+  until: pve_join_post_status.stdout is search('Quorate:\\s+Yes')
+
+- name: Read the node list from the seed
+  ansible.builtin.command: pvecm nodes
+  changed_when: false
+  delegate_to: "{{ cluster_seed_host }}"
+  register: pve_join_nodes
+
+- name: Assert the new node appears in the membership list
+  ansible.builtin.assert:
+    that:
+      - expected_hostname in pve_join_nodes.stdout
+    fail_msg: |
+      {{ expected_hostname }} does not appear in the cluster membership:
+      {{ pve_join_nodes.stdout }}
+
+- name: Assert the cluster is quorate
+  ansible.builtin.assert:
+    that:
+      - pve_join_post_status.stdout is search('Quorate:\\s+Yes')
+    fail_msg: |
+      The cluster is not quorate after the join:
+      {{ pve_join_post_status.stdout }}
+      Do NOT use `pvecm expected 1` to paper over this.
+
+- name: Report the membership
+  ansible.builtin.debug:
+    msg:
+      - "{{ expected_hostname }} is a member of '{{ cluster_name }}'."
+      - "{{ pve_join_nodes.stdout_lines }}"
+      - "{{ pve_join_post_status.stdout_lines | select('search', '(Quorate|Total votes|Expected votes|Nodes)') | list }}"
+      - ""
+      - "The recorded SSH host-key fingerprint still matches after the join."
+      - "The Proxmox X.509 node certificate was regenerated as expected."

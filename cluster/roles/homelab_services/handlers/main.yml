@@ -1,0 +1,11 @@
+---
+- name: Reload Nginx Proxy Manager
+  ansible.builtin.command:
+    argv:
+      - docker
+      - exec
+      - npm
+      - nginx
+      - -s
+      - reload
+  changed_when: true

@@ -1,0 +1,38 @@
+---
+# Stage 3 — first backup generation, guests left running (snapshot mode).
+#
+#   make backup-initial HOST=pve1
+#
+# Runs against the one host with protected guests. .12 and .13 are excluded:
+# their current guests are cataloged for later rebuild and are never backed up.
+- name: Initial live backup of every protected guest
+  hosts: preserve
+  gather_facts: true
+  serial: 1
+  any_errors_fatal: true
+  max_fail_percentage: 0
+  tags: [stage3, backup]
+
+  vars:
+    vzdump_backup_generation: initial
+    vzdump_backup_mode: "{{ vzdump_initial_mode }}"
+    vzdump_backup_stop_guests_first: false
+
+  pre_tasks:
+    - name: Refuse to run against the disposable host
+      ansible.builtin.assert:
+        that:
+          - inventory_hostname != 'pve'
+        fail_msg: "The guests on .13 are disposable and must never be backed up."
+
+  roles:
+    - role: vzdump_backup
+
+  post_tasks:
+    - name: Remind the operator what generation 1 is and is not
+      ansible.builtin.debug:
+        msg:
+          - "Generation 'initial' complete for {{ inventory_hostname }}."
+          - "Mode '{{ vzdump_initial_mode }}' produces a CRASH-CONSISTENT image of running guests."
+          - "Databases and etcd need an application-level dump for a consistent restore."
+          - "Next: verify with `make verify-backups`, then take generation 'final'."

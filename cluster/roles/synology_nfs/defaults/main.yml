@@ -1,0 +1,10 @@
+---
+synology_nfs_action: preflight        # preflight | configure
+synology_nfs_probe_mount: "/mnt/.pve-migration-nfs-preflight"
+synology_nfs_port: 2049
+synology_nfs_rpcbind_port: 111
+synology_nfs_connect_timeout: 10
+synology_nfs_acceptable_fstypes: [nfs, nfs4]
+# `keep-all=1` is what makes this storage a write-only archive from Proxmox's
+# point of view: no retention policy, so nothing is ever pruned automatically.
+synology_nfs_prune_policy: "keep-all=1"

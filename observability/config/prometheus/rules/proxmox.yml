@@ -1,0 +1,61 @@
+---
+groups:
+  - name: proxmox
+    rules:
+      # Exclude guests that are intentionally powered off in steady state:
+      # qemu/399 (isolated restore-drill shell). Re-add an id to the expression
+      # when it should page.
+      #
+      # qemu/297 was removed from this exclusion on 2026-09-19. That guest was
+      # confirmed obsolete and destroyed, so the exclusion matched nothing and
+      # the comment describing it as a "protected, operator-stopped" guest was
+      # actively misleading. Its two NAS archives are retained permanently.
+      - alert: ProxmoxGuestDown
+        expr: >-
+          pve_up{id=~"qemu/.*|lxc/.*", id!~"qemu/399"} == 0
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Proxmox guest {{ $labels.id }} is down"
+          description: "A previously exported guest has remained down for ten minutes."
+
+      - alert: ProxmoxStorageFilling
+        expr: pve_disk_usage_bytes{id=~"storage/.*"} / pve_disk_size_bytes{id=~"storage/.*"} > 0.85
+        for: 30m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Proxmox storage {{ $labels.id }} is above 85%"
+          description: "Review growth and backup jobs; do not prune archives automatically."
+
+      # Added 2026-09-19 with Phase 1.5/1.6. Scheduled vzdump jobs went from one
+      # guest to all seven, and the NFS storage is registered `keep-all=1`, so it
+      # only ever grows - nothing prunes it, by deliberate policy. An 85% level
+      # alert is a late signal on an 11 TB volume: it leaves weeks, not months.
+      # This predicts the trend instead, giving 30 days of warning, so capacity
+      # can be added or archives moved off deliberately rather than urgently.
+      # NEVER resolve this alert by pruning archives - that rule is absolute.
+      - alert: ProxmoxBackupStorageWillFill
+        expr: >-
+          predict_linear(pve_disk_usage_bytes{id=~"storage/.*/synology-backup"}[7d], 30 * 24 * 3600)
+          > pve_disk_size_bytes{id=~"storage/.*/synology-backup"}
+        for: 6h
+        labels:
+          severity: warning
+        annotations:
+          summary: "Backup storage {{ $labels.id }} is trending full within 30 days"
+          description: >-
+            Extrapolating the last seven days of growth, the backup target fills
+            within 30 days. Archives are never pruned (keep-all=1), so resolve
+            this by adding capacity or moving older archives to a second
+            destination - never by deleting an archive.
+
+      - alert: ProxmoxNodeMemoryPressure
+        expr: pve_memory_usage_bytes{id=~"node/.*"} / pve_memory_size_bytes{id=~"node/.*"} > 0.90
+        for: 15m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Proxmox node memory pressure on {{ $labels.id }}"
+          description: "Memory use exceeded 90% for 15 minutes."

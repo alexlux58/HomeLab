@@ -1,0 +1,161 @@
+---
+# Stage 2. Captures the host-specific configuration that a vzdump archive does
+# NOT contain: bridges, snippets, hook scripts, kernel module setup, storage
+# definitions, firewall rules. Without this, a rebuilt host cannot host the
+# restored guests even if every archive is perfect.
+
+- name: Define this run's capture directory
+  ansible.builtin.set_fact:
+    host_config_backup_run_dir: "{{ host_config_backup_capture_root }}/{{ ansible_date_time.iso8601_basic_short }}"
+
+- name: Create the capture directory tree
+  ansible.builtin.file:
+    path: "{{ host_config_backup_run_dir }}/{{ item }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0700"
+  loop: [files, commands]
+
+- name: Record which paths exist on this host
+  ansible.builtin.stat:
+    path: "{{ item }}"
+  loop: "{{ host_config_backup_paths }}"
+  register: host_config_backup_stat
+  loop_control:
+    label: "{{ item }}"
+
+- name: Copy each existing configuration path into the capture directory
+  ansible.builtin.shell: |
+    set -o pipefail
+    set -eu
+    src={{ item.item | quote }}
+    dest={{ host_config_backup_run_dir | quote }}/files
+    mkdir -p "$dest$(dirname "$src")"
+    # -h dereferences symlinks. /etc/pve/qemu-server, lxc and local are
+    # symlinks into /etc/pve/nodes/<node>/, so without it tar captures the
+    # links and the guest .conf files are silently absent from the capture.
+    tar -chf - \
+      {% for pattern in host_config_backup_exclude_patterns %}--exclude={{ pattern | quote }} {% endfor %} \
+      -C / "${src#/}" | tar -xf - -C "$dest"
+  args:
+    executable: /bin/bash
+  changed_when: true
+  loop: "{{ host_config_backup_stat.results }}"
+  loop_control:
+    label: "{{ item.item }}"
+  when: item.stat.exists
+
+- name: Capture the output of the read-only inventory commands
+  ansible.builtin.shell: |
+    set -eu
+    {{ item.argv | map('quote') | join(' ') }} > {{ host_config_backup_run_dir | quote }}/commands/{{ item.name }}.txt 2>&1 || true
+  args:
+    executable: /bin/bash
+  changed_when: true
+  loop: "{{ host_config_backup_commands }}"
+  loop_control:
+    label: "{{ item.name }}"
+
+- name: Scan the capture for anything that looks like key material
+  ansible.builtin.shell: |
+    set -o pipefail
+    grep -rlE 'BEGIN (OPENSSH|RSA|EC|DSA|PGP) PRIVATE KEY|PVEAPIToken' \
+      {{ host_config_backup_run_dir | quote }} 2>/dev/null || true
+  args:
+    executable: /bin/bash
+  changed_when: false
+  register: host_config_backup_secret_scan
+
+- name: Abort if secret material was captured
+  ansible.builtin.assert:
+    that:
+      - host_config_backup_secret_scan.stdout | trim | length == 0
+    fail_msg: |
+      Private key material was found inside the configuration capture:
+      {{ host_config_backup_secret_scan.stdout }}
+      This must never leave the host. Widen host_config_backup_exclude_patterns and
+      re-run. The capture directory has been left in place for inspection.
+
+- name: Assert the guest configurations were actually captured
+  ansible.builtin.find:
+    paths: "{{ host_config_backup_run_dir }}/files/etc/pve/qemu-server"
+    patterns: "*.conf"
+  register: host_config_backup_guest_confs
+
+- name: Verify one captured .conf per guest on this host
+  ansible.builtin.assert:
+    that:
+      - host_config_backup_guest_confs.matched >= (protected_guests[inventory_hostname] | length)
+    fail_msg: >-
+      Captured {{ host_config_backup_guest_confs.matched }} guest configs but
+      {{ inventory_hostname }} has {{ protected_guests[inventory_hostname] | length }}
+      protected guests. /etc/pve/qemu-server is a symlink into /etc/pve/nodes/,
+      so a capture that does not dereference symlinks silently yields an empty
+      directory.
+    success_msg: >-
+      {{ host_config_backup_guest_confs.matched }} guest configuration(s) captured.
+
+- name: Build a manifest of everything captured
+  ansible.builtin.shell: |
+    set -o pipefail
+    set -eu
+    cd {{ host_config_backup_run_dir | quote }}
+    find . -type f -printf '%p\t%s\n' | sort > MANIFEST.tsv
+    find . -type f ! -name MANIFEST.tsv -exec sha256sum {} + | sort -k2 > SHA256SUMS
+    wc -l < MANIFEST.tsv
+  args:
+    executable: /bin/bash
+  changed_when: true
+  register: host_config_backup_manifest
+
+- name: Create a single compressed archive of the capture
+  community.general.archive:
+    path: "{{ host_config_backup_run_dir }}"
+    dest: "{{ host_config_backup_run_dir }}.tar.gz"
+    format: gz
+    mode: "0600"
+    owner: root
+    group: root
+
+- name: Fetch the capture archive to the controller
+  ansible.builtin.fetch:
+    src: "{{ host_config_backup_run_dir }}.tar.gz"
+    dest: "{{ host_configs_dir }}/{{ expected_hostname }}/"
+    flat: true
+    validate_checksum: true
+
+- name: Unpack the capture on the controller so it is diffable
+  # `ansible.builtin.unarchive` insists on GNU tar, which a stock macOS
+  # controller does not have (it ships bsdtar). bsdtar reads these archives
+  # perfectly well, so call it directly.
+  ansible.builtin.command:
+    argv:
+      - tar
+      - -xzf
+      - "{{ host_configs_dir }}/{{ expected_hostname }}/{{ host_config_backup_run_dir | basename }}.tar.gz"
+      - -C
+      - "{{ host_configs_dir }}/{{ expected_hostname }}/"
+    creates: "{{ host_configs_dir }}/{{ expected_hostname }}/{{ host_config_backup_run_dir | basename }}"
+  delegate_to: localhost
+  become: false
+  when: host_config_unpack_locally | default(true) | bool
+
+- name: Point "latest" at this capture
+  ansible.builtin.file:
+    src: "{{ host_config_backup_run_dir | basename }}"
+    dest: "{{ host_configs_dir }}/{{ expected_hostname }}/latest"
+    state: link
+    force: true
+  delegate_to: localhost
+  become: false
+  when: host_config_unpack_locally | default(true) | bool
+
+- name: Report what was captured
+  ansible.builtin.debug:
+    msg:
+      - "host:      {{ inventory_hostname }} ({{ expected_hostname }})"
+      - "files:     {{ host_config_backup_manifest.stdout | trim }}"
+      - "archive:   {{ host_configs_dir }}/{{ expected_hostname }}/{{ host_config_backup_run_dir | basename }}.tar.gz"
+      - "tree:      {{ host_configs_dir }}/{{ expected_hostname }}/latest/"
+      - "excluded:  {{ host_config_backup_exclude_patterns | join(', ') }}"

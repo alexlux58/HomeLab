@@ -1,0 +1,16 @@
+[Unit]
+Description=Application-aware homelab observability backup
+Wants=network-online.target
+After=network-online.target docker.service
+
+[Service]
+Type=oneshot
+ExecStart=/opt/observability/scripts/backup.sh
+Nice=10
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=full
+ReadWritePaths=/srv/observability /var/lib/node_exporter/textfile /run/lock
+

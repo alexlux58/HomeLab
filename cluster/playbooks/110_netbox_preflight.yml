@@ -1,0 +1,63 @@
+---
+- name: Validate the NetBox guest before any application deployment
+  hosts: netbox_guests
+  gather_facts: true
+  become: true
+  serial: 1
+  any_errors_fatal: true
+
+  tasks:
+    - name: Require the expected guest identity and architecture
+      ansible.builtin.assert:
+        that:
+          - ansible_facts.hostname == expected_hostname
+          - ansible_facts.architecture == 'x86_64'
+          - ansible_facts.distribution == 'Ubuntu'
+          - ansible_facts.distribution_major_version == '24'
+
+    - name: Require the reviewed memory envelope
+      ansible.builtin.assert:
+        that:
+          - ansible_facts.memtotal_mb | int >= 2800
+        fail_msg: >-
+          NetBox needs about 2.2 GiB of container limits plus the operating
+          system. Re-measure pve3 before reducing the guest below 3 GiB.
+
+    - name: Require filesystem headroom for PostgreSQL and backups
+      ansible.builtin.assert:
+        that:
+          - >-
+            ansible_facts.mounts | selectattr('mount', 'equalto', '/')
+            | map(attribute='size_available') | first | int > 16106127360
+        fail_msg: "The NetBox guest requires at least 15 GiB free before deployment."
+
+    - name: Check Docker Compose availability
+      ansible.builtin.command:
+        argv: [docker, compose, version]
+      changed_when: false
+
+    - name: Read listening sockets on the deployment ports
+      ansible.builtin.command:
+        argv: [ss, -H, -ltn]
+      register: netbox_preflight_sockets
+      changed_when: false
+
+    - name: Require the NetBox application port to be free
+      ansible.builtin.assert:
+        that:
+          - "':8000' not in netbox_preflight_sockets.stdout"
+        fail_msg: "Port 8000 is already in use on the NetBox guest."
+
+    - name: Read the QEMU guest agent state
+      ansible.builtin.command:
+        argv: [systemctl, is-active, qemu-guest-agent]
+      register: netbox_preflight_agent
+      changed_when: false
+      failed_when: false
+
+    - name: Report the preflight verdict
+      ansible.builtin.debug:
+        msg: >-
+          NetBox preflight passed: {{ ansible_facts.memtotal_mb }} MiB RAM,
+          {{ ansible_facts.processor_vcpus }} vCPU, guest agent
+          {{ netbox_preflight_agent.stdout | default('unknown') }}.

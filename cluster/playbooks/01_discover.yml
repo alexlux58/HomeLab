@@ -1,0 +1,125 @@
+---
+# Stage 0b — read-only discovery.
+#
+#   make discover
+#
+# Nothing is modified. Produces:
+#   artifacts/discovery.json
+#   artifacts/discovery.md
+#   artifacts/vmid-collisions.json
+#   artifacts/storage-capacity.json
+- name: Collect read-only inventory from every Proxmox host
+  hosts: proxmox
+  gather_facts: true
+  serial: 1
+  any_errors_fatal: true
+  tags: [stage0, readonly, discovery]
+
+  roles:
+    - role: discovery
+
+- name: Assemble the discovery artifacts on the controller
+  hosts: localhost
+  gather_facts: true
+  connection: local
+  become: false
+  any_errors_fatal: true
+  tags: [stage0, readonly, discovery]
+
+  tasks:
+    - name: Ensure the artifacts directory exists
+      ansible.builtin.file:
+        path: "{{ artifacts_dir }}"
+        state: directory
+        mode: "0755"
+
+    - name: Write the combined discovery document
+      ansible.builtin.copy:
+        content: |
+          {{ {
+               'schema_version': 1,
+               'generated_at': ansible_date_time.iso8601,
+               'read_only': true,
+               'cluster_name': cluster_name,
+               'target_pve_release': target_pve_release,
+               'hosts': dict(groups['proxmox']
+                             | map('extract', hostvars, 'discovery_host_document')
+                             | list | zip(groups['proxmox']) | map('reverse') | list)
+             } | to_nice_json }}
+        dest: "{{ artifacts_dir }}/discovery.json"
+        mode: "0644"
+
+    - name: Render the human-readable discovery report
+      ansible.builtin.command:
+        argv:
+          - "{{ project_root }}/.venv/bin/python"
+          - "{{ scripts_dir }}/build_inventory_report.py"
+          - --discovery
+          - "{{ artifacts_dir }}/discovery.json"
+          - --out
+          - "{{ artifacts_dir }}/discovery.md"
+      changed_when: true
+
+    - name: Detect every VMID and MAC collision
+      ansible.builtin.command:
+        argv:
+          - "{{ project_root }}/.venv/bin/python"
+          - "{{ scripts_dir }}/detect_vmid_collisions.py"
+          - --discovery
+          - "{{ artifacts_dir }}/discovery.json"
+          - --out
+          - "{{ artifacts_dir }}/vmid-collisions.json"
+          - --preserve-host
+          - "{{ vmid_preserve_priority_host }}"
+          - --disposable-host
+          - pve
+          - --disposable-host
+          - pve2
+          - --search-start
+          - "{{ vmid_search_range.start }}"
+          - --search-end
+          - "{{ vmid_search_range.end }}"
+          - --fail-on-unresolved
+      changed_when: true
+
+    - name: Write the protected-guest declaration for the capacity calculator
+      ansible.builtin.copy:
+        content: "{{ protected_guests | to_nice_json }}\n"
+        dest: "{{ artifacts_dir }}/protected-guests.json"
+        mode: "0644"
+
+    - name: Estimate the backup capacity requirement
+      ansible.builtin.command:
+        argv:
+          - "{{ project_root }}/.venv/bin/python"
+          - "{{ scripts_dir }}/calculate_backup_capacity.py"
+          - --discovery
+          - "{{ artifacts_dir }}/discovery.json"
+          - --protected
+          - "{{ artifacts_dir }}/protected-guests.json"
+          - --out
+          - "{{ artifacts_dir }}/storage-capacity.json"
+          - --margin-pct
+          - "{{ backup_capacity_margin_pct }}"
+          - --compression-ratio
+          - "{{ backup_compression_ratio_assumption }}"
+          - --min-free-gib
+          - "{{ nas_min_free_gib }}"
+          - --no-fail
+      changed_when: true
+      # --no-fail here: at stage 0 the NAS free space is not known yet, so this
+      # is an estimate only. Stage 1 re-runs it with real NAS figures and DOES fail.
+
+    - name: Show the collision summary
+      ansible.builtin.debug:
+        msg: "{{ (lookup('file', artifacts_dir ~ '/vmid-collisions.json') | from_json).summary }}"
+
+    - name: Show where the artifacts landed
+      ansible.builtin.debug:
+        msg:
+          - "artifacts/discovery.json          — full machine-readable inventory"
+          - "artifacts/discovery.md            — review this before approving anything"
+          - "artifacts/vmid-collisions.json    — VMID and MAC collisions + proposed remap"
+          - "artifacts/storage-capacity.json   — estimated backup size (refined in stage 1)"
+          - ""
+          - "No host was modified."

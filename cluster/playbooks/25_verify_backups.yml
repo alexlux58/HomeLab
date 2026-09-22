@@ -1,0 +1,58 @@
+---
+# Stage 4b — verify every archive. This is the gate every destructive stage
+# depends on.
+#
+#   make verify-backups
+- name: Verify every backup archive on each source host
+  hosts: preserve
+  gather_facts: true
+  serial: 1
+  any_errors_fatal: true
+  tags: [stage4, verify]
+
+  roles:
+    - role: backup_verify
+
+- name: Adjudicate coverage across both generations
+  hosts: localhost
+  gather_facts: false
+  connection: local
+  become: false
+  any_errors_fatal: true
+  tags: [stage4, verify]
+
+  tasks:
+    - name: Merge the per-host manifests into one document
+      ansible.builtin.copy:
+        content: |
+          {{ {
+               'schema_version': 1,
+               'generated_at': lookup('pipe', 'date -u +%Y-%m-%dT%H:%M:%SZ'),
+               'archives': groups['preserve']
+                 | map('extract', hostvars, 'backup_verify_merged')
+                 | select('defined') | list | flatten
+             } | to_nice_json }}
+        dest: "{{ artifacts_dir }}/backup-manifest.json"
+        mode: "0644"
+
+    - name: Build the requested-generation command arguments
+      ansible.builtin.set_fact:
+        backup_verify_generation_argv: >-
+          {{ (backup_verify_generation_argv | default([])) + ['--generation', item] }}
+      loop: "{{ backup_verify_generations }}"
+
+    - name: Assert the verified archive count equals the protected guest count
+      ansible.builtin.command:
+        argv: >-
+          {{ [project_root ~ '/.venv/bin/python',
+              scripts_dir ~ '/verify_vma_archives.py',
+              '--manifest', artifacts_dir ~ '/backup-manifest.json',
+              '--protected', artifacts_dir ~ '/protected-guests.json']
+             + backup_verify_generation_argv
+             + ['--out', artifacts_dir ~ '/backup-verification.json'] }}
+      changed_when: false
+      register: verify_result
+
+    - name: Show the verification verdict
+      ansible.builtin.debug:
+        msg: "{{ (lookup('file', artifacts_dir ~ '/backup-verification.json') | from_json).counts }}"

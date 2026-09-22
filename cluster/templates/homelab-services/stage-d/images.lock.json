@@ -1,0 +1,52 @@
+{
+  "it-tools": {
+    "amd64": "sha256:6f177c156b9466610e0f2093e24668b78da501c66f0054f98bccb582b74ab26b",
+    "index": "sha256:8b8128748339583ca951af03dfe02a9a4d7363f61a216226fc28030731a5a61f",
+    "tag": "corentinth/it-tools:2024.10.22-7ca5933"
+  },
+  "linkding": {
+    "amd64": "sha256:5bc84e0766268b0d119c0a4e10131a2fd12d91da66493f8d395df5c5e7b8d6d5",
+    "index": "sha256:61b2eb9eed8e5772a473fb7f1f8923e046cb8cbbeb50e88150afd5ff287d4060",
+    "tag": "sissbruecker/linkding:1.45.0"
+  },
+  "netknife-local": {
+    "api_image": "homelab/netknife-api:28ef127baeab",
+    "source_sha256": "28ef127baeabe0ef6a6b8bcfc0fa521cee558c29dd97af9aea72f99809129e4b",
+    "web_image": "homelab/netknife-web:28ef127baeab"
+  },
+  "netknife-nginx-base": {
+    "amd64": "sha256:28d91bdce70ad09025ea901458fdd149259d8e05982ade79d4ef2c0d9470eb48",
+    "index": "sha256:65e3e85dbaed8ba248841d9d58a899b6197106c23cb0ff1a132b7bfe0547e4c0",
+    "tag": "nginxinc/nginx-unprivileged:1.27-alpine"
+  },
+  "netknife-node-base": {
+    "amd64": "sha256:3d0f05455dea2c82e2f76e7e2543964c30f6b7d673fc1a83286736d44fe4c41c",
+    "index": "sha256:2cf067cfed83d5ea958367df9f966191a942351a2df77d6f0193e162b5febfc0",
+    "tag": "node:20-bookworm-slim"
+  },
+  "nginx-proxy-manager": {
+    "amd64": "sha256:99a885f56ca2203a2eb352a5f9e2cd5c1e25786508debd725ad48ebe955d114f",
+    "index": "sha256:52b2c59994f3d36acfcf70a1626f29734df0ed8c71bacc0269f78b6f939858bb",
+    "tag": "jc21/nginx-proxy-manager:2.15.1"
+  },
+  "homepage": {
+    "amd64": "sha256:c881120b024d6a8e2f3c9664efc568984e4352e47df459d6b32e225374c71955",
+    "index": "sha256:a0b71c8e757298d02560186bab9fbe3fc2d375c523a62cc1019177b37e48aa28",
+    "tag": "ghcr.io/gethomepage/homepage:v1.13.2"
+  },
+  "pairdrop": {
+    "amd64": "sha256:39fdf4aa90c577f6ddb236493cb43774b80f7198934d2f6e46be25b91f92025d",
+    "index": "sha256:c4b30977264a76e335740089e693a52a0d0d616330dec7f93c7b96beef7b4a02",
+    "tag": "ghcr.io/schlagmichdoch/pairdrop:v1.11.2"
+  },
+  "speedtest-tracker": {
+    "amd64": "sha256:cdb782713a9cf74e9e0c25c6f21ae9984607686d91b34ecc8c15b627686ef9a2",
+    "index": "sha256:226b39816ccb9bf6d07fa9735d8beed656699db4669209e92f7494f15ab3f113",
+    "tag": "lscr.io/linuxserver/speedtest-tracker:1.14.3"
+  },
+  "uptime-kuma": {
+    "amd64": "sha256:dbede95c52962acf5dedc67b46d98fe9ad366c708aebc5e0ee70ca5245181482",
+    "index": "sha256:9aeb4e51d038047f414309c77a1af553281ca535723cb88907d907269d0a908e",
+    "tag": "louislam/uptime-kuma:2.3.2"
+  }
+}

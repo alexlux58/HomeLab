@@ -1,0 +1,41 @@
+---
+name: homelab-speedtest-tracker
+
+services:
+  speedtest-tracker:
+    image: lscr.io/linuxserver/speedtest-tracker:1.14.3@sha256:cdb782713a9cf74e9e0c25c6f21ae9984607686d91b34ecc8c15b627686ef9a2
+    container_name: speedtest-tracker
+    restart: unless-stopped
+    env_file:
+      - /etc/homelab/secret-store/speedtest-tracker.env
+    expose:
+      - "80"
+    ports:
+      - "127.0.0.1:8182:80"
+    volumes:
+      - /srv/homelab/speedtest-tracker/config:/config
+    networks:
+      homelab_proxy:
+        aliases:
+          - speedtest-tracker
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - curl -fsS http://127.0.0.1/api/healthcheck >/dev/null || exit 1
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 120s
+    security_opt:
+      - no-new-privileges:true
+    mem_limit: 768m
+    mem_reservation: 256m
+    cpus: 1.5
+    pids_limit: 512
+    labels:
+      com.examplelab.homelab.role: network-monitoring
+      com.examplelab.homelab.state: /srv/homelab/speedtest-tracker
+
+networks:
+  homelab_proxy:
+    external: true
