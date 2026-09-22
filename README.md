@@ -5,8 +5,9 @@ lab, its observability stack, and a secrets/recovery plane.
 
 Everything here is published deliberately. Inventories with real addresses,
 credentials, private keys, host captures, state files, VM images and backups are
-not in this repository and never will be — the repository denies everything by
-default and allows only this `public/` tree.
+not in this repository and never will be. This repository contains only
+generated, sanitised copies: the internal sources live elsewhere and are never
+reachable from here.
 
 ## What this is really about
 
@@ -121,7 +122,8 @@ shape of the automation and its safety contract, not a deployable artifact.
   given above.
 
 Every file here is scanned before each commit against a literal denylist of real
-values plus structural patterns for private IPv4 addresses, MAC addresses, SSH
-fingerprints, private keys, e-mail addresses and API tokens. A pre-commit hook
-blocks the commit on any hit, and also blocks staging anything outside this
-tree.
+values plus structural patterns for complete and partial private IPv4 addresses,
+MAC addresses, SSH fingerprints, private keys, e-mail addresses and API tokens.
+A pre-commit hook blocks the commit on any hit. Because the scanner lives
+outside this repository, the hook fails closed: if it cannot reach the scanner,
+the commit is refused rather than allowed through unscanned.
