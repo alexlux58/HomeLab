@@ -1,0 +1,8 @@
+# This repository is generated. Do not edit it by hand: change the internal
+# source and re-run the publishing script in the parent operator directory.
+#
+# Nothing here is an allow-list. The publishing boundary is enforced by the
+# generator and by the pre-commit guard, not by this file.
+__pycache__/
+*.py[cod]
+.DS_Store
